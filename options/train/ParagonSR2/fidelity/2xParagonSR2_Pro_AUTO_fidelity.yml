@@ -47,7 +47,7 @@ network_g:
   # FIDELITY OPTIMIZATION: Pure reconstruction for highest PSNR/SSIM
   upsampler_alpha: 0.0 # No sharpening - pure reconstruction for metrics
   detail_gain: 0.12 # Higher detail enhancement for archival quality
-  use_content_aware: false # Zero overhead for maximum training speed
+  use_content_aware: true # Enable content-aware processing for better fidelity
 
 path:
   pretrain_network_g: ~

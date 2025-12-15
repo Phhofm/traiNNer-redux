@@ -884,8 +884,8 @@ def paragonsr2_pro(
     [Pro Edition] - The 'Large'
     Target: Archival Restoration / Benchmark Fidelity.
     Hardware: RTX 3080 / 4080 / 4090.
-    Tech: 96ch, Deep Context (17), Shifted Window Attention, Aggressive Detail.
-
+    Tech: 96ch, Deep Context (17), Shifted Window Attention, Content-Aware Processing.
+    
     Note: For benchmark metrics (PSNR), set upsampler_alpha=0.0 in training.
     """
     return ParagonSR2(
