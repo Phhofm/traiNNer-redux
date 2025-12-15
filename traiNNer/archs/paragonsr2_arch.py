@@ -40,6 +40,7 @@ import torch
 import torch.nn.functional as F
 import torch.onnx
 from torch import nn
+from torch.utils import checkpoint
 
 from traiNNer.utils.registry import ARCH_REGISTRY
 
@@ -691,6 +692,7 @@ class ParagonSR2(nn.Module):
         block_type: str = "paragon",  # 'nano', 'gate', 'paragon'
         block_kwargs: dict | None = None,
         use_channels_last: bool = True,
+        gradient_checkpointing: bool = False,
         **kwargs,
     ) -> None:
         super().__init__()
@@ -702,6 +704,7 @@ class ParagonSR2(nn.Module):
         self.scale = scale
         self.use_channels_last = use_channels_last and torch.cuda.is_available()
         self.use_content_aware = use_content_aware
+        self.gradient_checkpointing = gradient_checkpointing
 
         if block_kwargs is None:
             block_kwargs = {}
@@ -777,8 +780,17 @@ class ParagonSR2(nn.Module):
 
         # 2. Detail Path (Texture Recovery)
         out = self.conv_in(x)
-        out = self.body(out)
-        deep_features = self.conv_fuse(out) + out
+        
+        # Gradient Checkpointing for memory optimization
+        if self.gradient_checkpointing:
+            def body_forward(x):
+                x = self.body(x)
+                x = self.conv_fuse(x) + x
+                return x
+            deep_features = checkpoint.checkpoint(body_forward, out)
+        else:
+            out = self.body(out)
+            deep_features = self.conv_fuse(out) + out
 
         # 3. Content-Aware Modulation (on DEEP FEATURES, not LR input)
         # This allows better texture vs. noise discrimination
