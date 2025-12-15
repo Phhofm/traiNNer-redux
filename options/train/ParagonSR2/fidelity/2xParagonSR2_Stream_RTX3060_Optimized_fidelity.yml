@@ -1,0 +1,132 @@
+#########################################################################################
+# ParagonSR2 Stream RTX3060 Optimized Config - FIDELITY OPTIMIZED
+# Optimized for RTX 3060 12GB with gradient checkpointing for better video quality
+# Uses checkpointing to increase both lq_size and batch_size for training stability
+# For RTX 3060 12GB: lq_size=192, batch=6, accum_iter=2, gradient_checkpointing=true
+#########################################################################################
+name: 2xParagonSR2_Stream_RTX3060_Optimized_fidelity
+scale: 2
+
+# VRAM MANAGEMENT SYSTEM
+auto_vram_management:
+  enabled: true # Enable automatic VRAM management
+  target_vram_usage: 0.85 # Target 85% VRAM usage (prevents OOM)
+  safety_margin: 0.05 # Additional 5% safety margin
+
+use_amp: true
+amp_bf16: true
+use_channels_last: true
+num_gpu: auto
+
+datasets:
+  train:
+    name: CC0_147k_Train
+    type: pairedimagedataset
+    dataroot_gt: /home/phips/Documents/dataset/cc0/filtered_versions/cc0_c5_hr
+    dataroot_lq: /home/phips/Documents/dataset/cc0/filtered_versions/cc0_c5_lr_x2
+
+    # RTX 3060 OPTIMIZED PARAMETERS for Stream with Gradient Checkpointing
+    # Uses checkpointing to support larger patches and batch sizes
+    lq_size: 192 # Increased from typical 128 (checkpointing saves VRAM)
+    batch_size_per_gpu: 6 # Good physical batch size
+    num_worker_per_gpu: 8 # Workers for efficient data loading
+    accum_iter: 2 # Effective batch size = 6*2 = 12 (good for video training)
+
+    use_hflip: true
+    use_rot: true
+
+  val:
+    name: CC0_147k_Val
+    type: pairedimagedataset
+    dataroot_gt: /home/phips/Documents/dataset/cc0/val_hr
+    dataroot_lq: /home/phips/Documents/dataset/cc0/val_lr_x2_bicubic_aa
+
+network_g:
+  type: paragonsr2_stream
+  # FIDELITY OPTIMIZATION: Pure reconstruction for highest PSNR/SSIM
+  upsampler_alpha: 0.0 # No sharpening - pure reconstruction for metrics
+  detail_gain: 0.1 # Standard detail enhancement for Stream
+  use_content_aware: true # Stream benefits from content-aware processing
+  gradient_checkpointing: true # RTX 3060 VRAM optimization
+
+path:
+  pretrain_network_g: ~
+  strict_load_g: true
+
+train:
+  ema_decay: 0.999
+  ema_power: 0.75
+  grad_clip: true
+
+  optim_g:
+    type: AdamW
+    lr: !!float 2e-4
+    weight_decay: !!float 1e-4
+    betas: [0.9, 0.99]
+
+  scheduler:
+    type: MultiStepLR
+    milestones: [40000, 50000, 55000]
+    gamma: 0.5
+
+  total_iter: 200000
+  warmup_iter: 1000
+
+  # DYNAMIC LOSS SCHEDULING WITH AUTO-CALIBRATION
+  dynamic_loss_scheduling:
+    enabled: true
+
+  # TRAINING AUTOMATIONS
+  training_automations:
+    enabled: true # Master enable for all automations
+    intelligent_learning_rate_scheduler:
+      enabled: true
+
+    DynamicBatchAndPatchSizeOptimizer:
+      enabled: true # Enable VRAM-based optimization
+      target_vram_usage: 0.85
+      safety_margin: 0.05
+      adjustment_frequency: 100
+      min_batch_size: 4
+      max_batch_size: 24 # Conservative max due to Stream's complexity
+      min_lq_size: 128 # Start larger due to checkpointing savings
+      max_lq_size: 384 # Higher max for Stream with checkpointing
+      vram_history_size: 50
+
+    IntelligentEarlyStopping:
+      enabled: true
+      patience: 10000
+      min_improvement: 0.01
+      monitor_metric: "val/psnr"
+      convergence_threshold: 0.0001 # More conservative threshold for convergence detection
+      convergence_log_frequency: 500 # Only log convergence messages every 500 iterations
+
+    adaptive_gradient_clipping:
+      enabled: true
+
+  # OPTIMAL FIDELITY LOSS COMBINATION
+  losses:
+    - type: l1loss
+      loss_weight: 1.0
+    - type: mssimloss
+      loss_weight: 0.08
+
+val:
+  val_enabled: true
+  val_freq: 1000
+  save_img: true
+
+  metrics_enabled: true
+  metrics:
+    psnr:
+      type: calculate_psnr
+      crop_border: 4
+    ssim:
+      type: calculate_ssim
+      crop_border: 4
+
+logger:
+  print_freq: 100
+  save_checkpoint_freq: 10000
+  save_checkpoint_format: safetensors
+  use_tb_logger: true
