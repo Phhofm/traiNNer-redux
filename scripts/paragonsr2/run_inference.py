@@ -388,7 +388,7 @@ class InferenceOrchestrator:
             return out
 
         out_t = _run(force_fp32=False)
-        out_img = out_t.squeeze(0).permute(1, 2, 0).cpu().numpy()
+        out_img = out_t.detach().squeeze(0).permute(1, 2, 0).cpu().numpy()
 
         # NaN/Inf Detection & Retry
         if np.isnan(out_img).any() or np.isinf(out_img).any():
@@ -398,7 +398,7 @@ class InferenceOrchestrator:
                 )
                 try:
                     out_t = _run(force_fp32=True)
-                    out_img = out_t.squeeze(0).permute(1, 2, 0).cpu().numpy()
+                    out_img = out_t.detach().squeeze(0).permute(1, 2, 0).cpu().numpy()
 
                     # Check again
                     if np.isnan(out_img).any() or np.isinf(out_img).any():
@@ -583,43 +583,53 @@ def main() -> None:
 
     orchestrator = InferenceOrchestrator(args)
 
-    # Collect files
-    if input_path.is_file():
-        files = [input_path]
-    else:
-        files = sorted(
-            [
-                p
-                for p in input_path.glob("*")
-                if p.suffix.lower()
-                in [".png", ".jpg", ".jpeg", ".webp", ".mp4", ".mkv", ".avi", ".mov"]
-            ]
-        )
-
-    print(f"\nProcessing {len(files)} files...")
-
-    for f in files:
-        is_video = f.suffix.lower() in [".mp4", ".mkv", ".avi", ".mov"]
-        out_name = f.stem + "_paragonsr2" + (".mp4" if is_video else ".png")
-        out_path = output_dir / out_name
-
-        if out_path.exists():
-            print(f"Skipping {f.name} (output exists)")
-            continue
-
-        if is_video:
-            orchestrator.process_video(f, out_path)
+    with torch.inference_mode():
+        # Collect files
+        if input_path.is_file():
+            files = [input_path]
         else:
-            print(f"  [Image] Processing: {f.name}")
-            img = cv2.imread(str(f))
-            if img is None:
-                print(f"    Warning: Could not read {f.name}")
-                continue
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            res = orchestrator.process_image(img)
-            cv2.imwrite(str(out_path), cv2.cvtColor(res, cv2.COLOR_RGB2BGR))
+            files = sorted(
+                [
+                    p
+                    for p in input_path.glob("*")
+                    if p.suffix.lower()
+                    in [
+                        ".png",
+                        ".jpg",
+                        ".jpeg",
+                        ".webp",
+                        ".mp4",
+                        ".mkv",
+                        ".avi",
+                        ".mov",
+                    ]
+                ]
+            )
 
-    print("\nDone!")
+        print(f"\nProcessing {len(files)} files...")
+
+        for f in files:
+            is_video = f.suffix.lower() in [".mp4", ".mkv", ".avi", ".mov"]
+            out_name = f.stem + "_paragonsr2" + (".mp4" if is_video else ".png")
+            out_path = output_dir / out_name
+
+            if out_path.exists():
+                print(f"Skipping {f.name} (output exists)")
+                continue
+
+            if is_video:
+                orchestrator.process_video(f, out_path)
+            else:
+                print(f"  [Image] Processing: {f.name}")
+                img = cv2.imread(str(f))
+                if img is None:
+                    print(f"    Warning: Could not read {f.name}")
+                    continue
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                res = orchestrator.process_image(img)
+                cv2.imwrite(str(out_path), cv2.cvtColor(res, cv2.COLOR_RGB2BGR))
+
+        print("\nDone!")
 
 
 if __name__ == "__main__":
