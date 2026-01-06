@@ -291,6 +291,7 @@ class NanoBlock(nn.Module):
 
     def __init__(self, dim: int, expansion: float = 2.0, **kwargs) -> None:
         super().__init__()
+        self.dim = dim
         hidden = int(dim * expansion)
 
         self.conv1 = nn.Conv2d(dim, hidden, 1)
