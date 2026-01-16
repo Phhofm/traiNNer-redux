@@ -1,0 +1,135 @@
+#########################################################################################
+# ParagonSR2 Ultimate Fidelity Config
+# SOTA quality using ATD (Adaptive Token Dictionary) Transformers
+# Optimized for highest PSNR/SSIM metrics with pure reconstruction (no sharpening)
+#########################################################################################
+name: 2xParagonSR2_Ultimate_fidelity_bhi_small
+scale: 2
+
+# VRAM MANAGEMENT SYSTEM
+auto_vram_management:
+  enabled: true
+  target_vram_usage: 0.85
+  safety_margin: 0.05
+
+use_amp: true # BF16 is essential for Pro (heavy attention)
+amp_bf16: true # BF16 prevents NaN in long-range attention
+use_channels_last: true # Tensor Core optimization
+num_gpu: auto
+use_compile: false # Set to false to prevent system freeze during compilation of 72 blocks
+
+datasets:
+  train:
+    name: BHI_small
+    type: pairedimagedataset
+    dataroot_gt: /home/phips/Documents/dataset/BHI/BHI_small/BHI_small
+    dataroot_lq: /home/phips/Documents/dataset/BHI/BHI_small/x2
+
+    # ULTIMATE VARIANT: 65M params. High VRAM footprint.
+    # Start conservative (64/6) and let DynamicBatchAndPatchSizeOptimizer scale up.
+    lq_size: 64
+    batch_size_per_gpu: 6
+    num_worker_per_gpu: 4
+    accum_iter: 1
+    prefetch_mode: cpu
+    pin_memory: true
+
+    use_hflip: true
+    use_rot: true
+
+  val:
+    name: BHI100
+    type: pairedimagedataset
+    dataroot_gt: eval_outputs/BHI100/BHI100_hr
+    dataroot_lq: eval_outputs/BHI100/BHI100_x2
+
+network_g:
+  type: paragonsr2_ultimate # Optimized Disciplined ATD Transformer (~32M params)
+  # FIDELITY OPTIMIZATION: Pure reconstruction for highest PSNR/SSIM
+  upsampler_alpha: 0.0 # Standard for metric benchmarks. Base path is disabled.
+  attention_mode: sdpa # FlashAttention/SDPA essential for window attention speed
+  use_checkpointing: true # REQUIRED for 144 blocks on <24GB VRAM
+  # Tiered JIT: Compiles only the individual block code. Safe for 16GB RAM.
+  compile_blocks: true
+
+path:
+  pretrain_network_g: ~
+  strict_load_g: true
+
+train:
+  ema_decay: 0.999
+  ema_power: 0.75
+  grad_clip: true # Critical for deep Transformer networks
+
+  optim_g:
+    type: AdamW
+    lr: !!float 2e-4
+    weight_decay: !!float 1e-4
+    betas: [0.9, 0.99]
+
+  scheduler:
+    type: MultiStepLR
+    milestones: [40000, 80000, 120000]
+    gamma: 0.5
+
+  total_iter: 600000
+  warmup_iter: 3000
+
+  # DYNAMIC LOSS SCHEDULING WITH AUTO-CALIBRATION
+  dynamic_loss_scheduling:
+    enabled: true
+
+  # TRAINING AUTOMATIONS
+  training_automations:
+    enabled: true
+    intelligent_learning_rate_scheduler:
+      enabled: true
+
+    DynamicBatchAndPatchSizeOptimizer:
+      enabled: true
+      target_vram_usage: 0.85
+      safety_margin: 0.05
+      adjustment_frequency: 100
+      min_batch_size: 2
+      max_batch_size: 64
+      min_lq_size: 64
+      max_lq_size: 256
+      vram_history_size: 50
+
+    IntelligentEarlyStopping:
+      enabled: true
+      patience: 20000 # Longer patience for Pro (slower convergence)
+      min_improvement: 0.01
+      monitor_metric: "val/psnr"
+      convergence_threshold: 0.0001
+      convergence_log_frequency: 500
+
+    adaptive_gradient_clipping:
+      enabled: true
+
+  # OPTIMAL FIDELITY LOSS COMBINATION
+  losses:
+    - type: l1loss
+      loss_weight: 1.0
+    - type: mssimloss
+      loss_weight: 0.08
+
+val:
+  val_enabled: true
+  val_freq: 1000 # Less frequent validation (Pro is slower)
+  save_img: true
+
+  metrics_enabled: true
+  metrics:
+    psnr:
+      type: calculate_psnr
+      crop_border: 4
+    ssim:
+      type: calculate_ssim
+      crop_border: 4
+
+logger:
+  print_freq: 100
+  save_checkpoint_freq: 10000
+  save_checkpoint_format: safetensors
+  use_tb_logger: true

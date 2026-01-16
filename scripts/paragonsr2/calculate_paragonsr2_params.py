@@ -84,6 +84,7 @@ def main() -> None:
         "Stream": paragonsr2_arch.paragonsr2_stream,
         "Photo": paragonsr2_arch.paragonsr2_photo,
         "Pro": paragonsr2_arch.paragonsr2_pro,
+        "Ultimate": paragonsr2_arch.paragonsr2_ultimate,
     }
 
     print(f"{'Variant':<15} | {'Parameters':>15}")
