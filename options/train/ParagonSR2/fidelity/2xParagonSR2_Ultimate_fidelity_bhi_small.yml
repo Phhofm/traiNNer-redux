@@ -46,7 +46,6 @@ datasets:
 network_g:
   type: paragonsr2_ultimate # Optimized Disciplined ATD Transformer (~32M params)
   # FIDELITY OPTIMIZATION: Pure reconstruction for highest PSNR/SSIM
-  upsampler_alpha: 0.0 # Standard for metric benchmarks. Base path is disabled.
   attention_mode: sdpa # FlashAttention/SDPA essential for window attention speed
   use_checkpointing: true # REQUIRED for 144 blocks on <24GB VRAM
   # Tiered JIT: Compiles only the individual block code. Safe for 16GB RAM.
