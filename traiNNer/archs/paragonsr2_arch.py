@@ -765,30 +765,51 @@ class UltimateBlock(nn.Module):
             attention_mode=attention_mode,
         )
         self.router2 = VarianceRouter()
-        self.scale2 = LayerScale(
-            dim, init_values=0.2
-        )  # Conservative 0.2 bias for structure
+        self.scale2 = LayerScale(dim, init_values=0.25)  # Tuned 0.25 for WA
 
         # 3. Token Dictionary path (High-frequency textures) - Optional
         self.use_token = use_token
+        self.window_size = window_size
         if use_token:
             self.norm3 = iLN(dim)
             self.token_ca = TokenDictionaryCA(dim, num_tokens=num_tokens)
             self.router3 = VarianceRouter()
-            self.scale3 = LayerScale(dim, init_values=1.0)  # Full power for textures
+            self.scale3 = LayerScale(dim, init_values=0.5)  # Tuned 0.5 for Token
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # 1. Serial Gated Conv mixing (Pure local)
         x = x + self.scale1(self.gated_conv(x))
 
-        # 2. Serial Window Attention with Variance-Aware Gating (Risk-Averse: std used for gating only)
+        # 2. Serial Window Attention with Variance-Aware Gating (Spatial Precision Gating)
         res = x
         x_normed, std2 = self.norm2(x)
-        x_attn = x_normed.permute(0, 2, 3, 1)
-        x_attn = self.window_attn(x_attn)
-        x_attn = x_attn.permute(0, 3, 1, 2)
-        # Intelligence: std2 (global stats) controls the ROUTER, but LayerScale controls the ENERGY.
-        x = res + self.scale2(self.router2(std2, x_attn))
+        _b, _c, h, w = x_normed.shape
+
+        # Intelligence: Computational Bypass for extremely flat images
+        if std2.mean() > 1e-4:
+            # Spatial Gating: Compute local activity map at window resolution
+            # This skips attention influence in flat regions (sky/walls) spatially.
+            with torch.no_grad():
+                local_std = F.avg_pool2d(
+                    x_normed**2, self.window_size, stride=self.window_size
+                )
+                local_std = torch.sqrt(local_std.mean(dim=1, keepdim=True) + 1e-6)
+                # Hard threshold for precision (if std < threshold, mask it)
+                spatial_mask = (local_std > 0.05).float()
+                spatial_mask = F.interpolate(spatial_mask, size=(h, w), mode="nearest")
+
+            x_attn = x_normed.permute(0, 2, 3, 1)
+            x_attn = self.window_attn(x_attn)
+            x_attn = x_attn.permute(0, 3, 1, 2)
+
+            # Apply Spatial Gating: Zero out attention outputs in flat regions
+            x_attn = x_attn * spatial_mask
+
+            # std2 (global stats) controls the ROUTER, but LayerScale controls the ENERGY.
+            x = res + self.scale2(self.router2(std2, x_attn))
+        else:
+            # Bypass mode: skip attention calculation entirely
+            pass
 
         # 3. Serial Token Dictionary CA (Texture Refinement) - Intelligence: 2x Spatial Pooling
         if self.use_token:
@@ -1720,8 +1741,8 @@ def paragonsr2_ultimate(scale=4, **kw):
     - Specialized for Urban100 / BHI100 and other pure benchmarks.
     - Matches HAT-L's weight class (~31.0M) with significantly higher performance density.
 
-    Balanced for peak PSNR: A tiny classical anchor (upsampler_alpha=0.05) is used
-    to stabilize low-frequency reconstruction.
+    Balanced for peak PSNR: A strong classical anchor (upsampler_alpha=0.20) is used
+    to provide a rock-solid foundation for low-frequency reconstruction.
     """
     return ParagonSR2(
         scale=scale,
@@ -1729,13 +1750,12 @@ def paragonsr2_ultimate(scale=4, **kw):
         num_groups=9,  # 9 groups x 8 blocks = 72 blocks total
         num_blocks=8,
         variant="ultimate",
-        detail_gain=kw.pop("detail_gain", 0.95),  # Conservative neural power
-        upsampler_alpha=kw.pop(
-            "upsampler_alpha", 0.05
-        ),  # Classical anchor for stability
+        detail_gain=kw.pop("detail_gain", 0.70),  # Constrained early dominance
+        upsampler_alpha=kw.pop("upsampler_alpha", 0.20),  # Strong LF Anchor
         attention_mode=kw.pop("attention_mode", "sdpa"),
         export_safe=kw.pop("export_safe", False),
         window_size=kw.pop("window_size", 16),
         num_tokens=kw.pop("num_tokens", 24),  # Standardized 24-token dictionary
+        compile_blocks=kw.pop("compile_blocks", True),  # Tiered JIT by default
         **kw,
     )
