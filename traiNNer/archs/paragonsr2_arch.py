@@ -713,26 +713,17 @@ class iLN(nn.Module):
 
         x_norm = (x - mean) / std
 
-        # Weight and bias broadcasting
-        return self.weight * x_norm + self.bias, std
+        # Metric Specialist: Return a spatial standard deviation map
+        # to allow for localized gating in subsequent mechanisms.
+        local_std = torch.mean(x_norm**2, dim=1, keepdim=True)
+        local_std = torch.sqrt(local_std + self.eps)
+
+        return self.weight * x_norm + self.bias, local_std
 
 
 class UltimateBlock(nn.Module):
     """
     Ultimate block: Serial Tri-Path (Sequential Refinement) with i-LN.
-
-    Philosophy: The "Disciplined" Pillar of ParagonSR2.
-    Designed for peak-tier metric performance (benchmarks) by utilizing:
-
-    1. Sequential Refinement: Operations are stacked serially (Conv -> Window -> Token)
-       instead of parallelized. This ensures each mechanism refines a cleaner signal.
-    2. Variance-Aware Gating: The Window Attention and Token mechanisms use a
-       VarianceRouter to "opt-out" of operations in flat image regions.
-    3. Asymmetric Scaling: Uses LayerScale with biased initial values (0.1 for local,
-       1.0 for global) to carefully balance local cleaning with structural restoration.
-    4. Gated Flow: Uses GLU-based gating in the convolutional mixer.
-    5. Curricular Scheduling: Supports an optional Token CA stage (`use_token`) to
-       enable a multi-stage refinement pipeline (Disciplined-Lite optimization).
     """
 
     def __init__(
@@ -751,9 +742,8 @@ class UltimateBlock(nn.Module):
         hidden = int(dim * expansion)
 
         # 1. Gated Conv path (Local Cleaning)
-        # iLN dropped here in "Intelligent" variant to reduce early global coupling.
         self.gated_conv = GatedConv(dim, hidden)
-        self.scale1 = LayerScale(dim, init_values=0.1)  # Low power for local cleaning
+        self.scale1 = LayerScale(dim, init_values=0.1)
 
         # 2. Window Attention path (Structural consistency)
         self.norm2 = iLN(dim)
@@ -765,69 +755,50 @@ class UltimateBlock(nn.Module):
             attention_mode=attention_mode,
         )
         self.router2 = VarianceRouter()
-        self.scale2 = LayerScale(dim, init_values=0.25)  # Tuned 0.25 for WA
+        self.scale2 = LayerScale(dim, init_values=0.25)
 
-        # 3. Token Dictionary path (High-frequency textures) - Optional
+        # 3. Token Dictionary path (optional)
         self.use_token = use_token
         self.window_size = window_size
         if use_token:
             self.norm3 = iLN(dim)
             self.token_ca = TokenDictionaryCA(dim, num_tokens=num_tokens)
             self.router3 = VarianceRouter()
-            self.scale3 = LayerScale(dim, init_values=0.5)  # Tuned 0.5 for Token
+            self.scale3 = LayerScale(dim, init_values=0.5)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # 1. Serial Gated Conv mixing (Pure local)
+        # 1. Local gated conv
         x = x + self.scale1(self.gated_conv(x))
 
-        # 2. Serial Window Attention with Variance-Aware Gating (Spatial Precision Gating)
+        # 2. Window Attention with pooled variance routing
         res = x
-        x_normed, std2 = self.norm2(x)
-        _b, _c, h, w = x_normed.shape
+        x_norm, std2 = self.norm2(x)
+        _b, _c, h, w = x_norm.shape
 
-        # Intelligence: Computational Bypass for extremely flat images
-        if std2.mean() > 1e-4:
-            # Spatial Gating: Compute local activity map at window resolution
-            # This skips attention influence in flat regions (sky/walls) spatially.
-            with torch.no_grad():
-                local_std = F.avg_pool2d(
-                    x_normed**2, self.window_size, stride=self.window_size
-                )
-                local_std = torch.sqrt(local_std.mean(dim=1, keepdim=True) + 1e-6)
-                # Hard threshold for precision (if std < threshold, mask it)
-                spatial_mask = (local_std > 0.05).float()
-                spatial_mask = F.interpolate(spatial_mask, size=(h, w), mode="nearest")
+        x_attn = self.window_attn(x_norm.permute(0, 2, 3, 1))
+        x_attn = x_attn.permute(0, 3, 1, 2)
 
-            x_attn = x_normed.permute(0, 2, 3, 1)
-            x_attn = self.window_attn(x_attn)
-            x_attn = x_attn.permute(0, 3, 1, 2)
+        # Pool variance to window resolution (stable gating)
+        std2_pooled = F.avg_pool2d(std2, kernel_size=self.window_size)
+        std2_pooled = F.interpolate(std2_pooled, size=(h, w), mode="nearest")
 
-            # Apply Spatial Gating: Zero out attention outputs in flat regions
-            x_attn = x_attn * spatial_mask
+        x = res + self.scale2(self.router2(x_attn, std2_pooled))
 
-            # std2 (global stats) controls the ROUTER, but LayerScale controls the ENERGY.
-            x = res + self.scale2(self.router2(std2, x_attn))
-        else:
-            # Bypass mode: skip attention calculation entirely
-            pass
-
-        # 3. Serial Token Dictionary CA (Texture Refinement) - Intelligence: 2x Spatial Pooling
+        # 3. Token Dictionary CA (optional)
         if self.use_token:
             res = x
-            x_normed, std3 = self.norm3(x)
+            x_norm, std3 = self.norm3(x)
 
-            # 2x Spatial Pooling for global context and compute efficiency (4x cheaper)
-            h, w = x_normed.shape[2:]
-            x_pool = F.avg_pool2d(x_normed, kernel_size=2)
+            x_pool = F.avg_pool2d(x_norm, kernel_size=2)
             x_tokens = self.token_ca(x_pool)
-
-            # Upsample back to original resolution
             x_tokens = F.interpolate(
                 x_tokens, size=(h, w), mode="bilinear", align_corners=False
             )
 
-            # Risk-Averse: std3 (global stats) controls the ROUTER, but LayerScale controls the ENERGY.
-            x = res + self.scale3(self.router3(std3, x_tokens))
+            std3_pooled = F.avg_pool2d(std3, kernel_size=2)
+            std3_pooled = F.interpolate(std3_pooled, size=(h, w), mode="nearest")
+
+            x = res + self.scale3(self.router3(x_tokens, std3_pooled))
 
         return x
 
