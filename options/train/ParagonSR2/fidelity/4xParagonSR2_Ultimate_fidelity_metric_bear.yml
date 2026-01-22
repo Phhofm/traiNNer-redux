@@ -1,0 +1,129 @@
+name: 4xParagonSR2_Ultimate_fidelity_metric_bear
+scale: 4
+
+# VRAM MANAGEMENT SYSTEM
+auto_vram_management:
+  enabled: false
+  target_vram_usage: 0.85
+  safety_margin: 0.05
+
+use_amp: true # BF16 is essential for Pro (heavy attention)
+amp_bf16: true # BF16 prevents NaN in long-range attention
+use_channels_last: true # Tensor Core optimization
+num_gpu: auto
+use_compile: false
+
+datasets:
+  train:
+    name: BEAR
+    type: pairedimagedataset
+    dataroot_gt: /home/phips/Documents/dataset/BHI/BEAR
+    dataroot_lq: /home/phips/Documents/dataset/BHI/BEAR_lr_x4
+
+    lq_size: 64
+    batch_size_per_gpu: 4
+    num_worker_per_gpu: 4
+    accum_iter: 1
+    prefetch_mode: ~
+    pin_memory: true
+
+    use_hflip: true
+    use_rot: true
+
+  val:
+    name: Urban100
+    type: pairedimagedataset
+    dataroot_gt: /home/phips/Documents/dataset/Urban100/HR
+    dataroot_lq: /home/phips/Documents/dataset/Urban100/x4
+
+network_g:
+  type: paragonsr2_ultimate # Optimized Disciplined ATD Transformer (~32M params)
+  # FIDELITY OPTIMIZATION: Pure reconstruction for highest PSNR/SSIM
+  attention_mode: sdpa # FlashAttention/SDPA essential for window attention speed
+  use_checkpointing: false # REQUIRED for 144 blocks on <24GB VRAM
+  # Tiered JIT: Compiles only the individual block code. Safe for 16GB RAM.
+  compile_blocks: true
+
+path:
+  pretrain_network_g: ~
+  strict_load_g: true
+
+train:
+  ema_decay: 0.999
+  ema_power: 0.75
+  grad_clip: true # Critical for deep Transformer networks
+
+  optim_g:
+    type: AdamW
+    lr: !!float 2e-4
+    weight_decay: !!float 1e-4
+    betas: [0.9, 0.99]
+
+  scheduler:
+    type: MultiStepLR
+    milestones: [100000, 200000, 300000]
+    gamma: 0.5
+
+  total_iter: 400000
+  warmup_iter: 3000
+
+  # DYNAMIC LOSS SCHEDULING WITH AUTO-CALIBRATION
+  dynamic_loss_scheduling:
+    enabled: false
+
+  # TRAINING AUTOMATIONS
+  training_automations:
+    enabled: false
+    intelligent_learning_rate_scheduler:
+      enabled: false
+
+    DynamicBatchAndPatchSizeOptimizer:
+      enabled: false
+      target_vram_usage: 0.85
+      safety_margin: 0.05
+      adjustment_frequency: 100
+      min_batch_size: 2
+      max_batch_size: 64
+      min_lq_size: 64
+      max_lq_size: 256
+      vram_history_size: 50
+
+    IntelligentEarlyStopping:
+      enabled: false
+      patience: 20000 # Longer patience for Pro (slower convergence)
+      min_improvement: 0.01
+      monitor_metric: "val/psnr"
+      convergence_threshold: 0.0001
+      convergence_log_frequency: 500
+
+    adaptive_gradient_clipping:
+      enabled: false
+
+  losses:
+    - type: l1loss
+      loss_weight: 1.0
+    # Higher fidelity focus: pushes SSIM metrics further
+    - type: mssimloss
+      loss_weight: 0.08
+
+val:
+  val_enabled: true
+  val_freq: 5000
+  save_img: false
+
+  metrics_enabled: true
+  metrics:
+    psnr:
+      type: calculate_psnr
+      crop_border: 4
+      test_y_channel: true
+    ssim:
+      type: calculate_ssim
+      crop_border: 4
+      test_y_channel: true
+
+logger:
+  print_freq: 100
+  save_checkpoint_freq: 10000
+  save_checkpoint_format: safetensors
+  use_tb_logger: true
