@@ -1757,6 +1757,14 @@ def paragonsr2_ultimate(scale: int, **kw) -> ParagonSR2:
     )
 
 
+@ARCH_REGISTRY.register()
+def paragonsr2_ultimate_v2(scale: int = 4, **kw):
+    """
+    ParagonSR2 Ultimate V2 (Rep-Parameterization).
+    """
+    return ParagonSR2_Ultimate(scale=scale, **kw)
+
+
 if __name__ == "__main__":
 
     def count_parameters(model):
