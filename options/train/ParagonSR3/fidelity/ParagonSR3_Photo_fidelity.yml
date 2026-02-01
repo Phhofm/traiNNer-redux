@@ -1,0 +1,114 @@
+# ============================================================================
+# PARAGONSR3 PHOTO: MULTI-SCALE FIDELITY TRAINING CONFIGURATION
+# ============================================================================
+# Model: ParagonSR3 "Virtuoso" Photo Multi-Scale
+# Purpose: Train once, export 1x/2x/3x/4x models
+# Method: On-the-fly LR generation from pristine GT
+# Hardware: Optimized for RTX 3060 (12GB) / Ryzen 3600 / 16GB RAM
+# ============================================================================
+
+name: ParagonSR3_Photo_fidelity_multiscale
+model_type: MultiScaleSRModel # Uses multi-scale training logic
+scale: 4 # Max scale for validation
+fast_matmul: true
+
+# MULTI-SCALE CONFIGURATION
+# ----------------------------------------------------------------------------
+multiscale:
+  scales: [1, 2, 3, 4] # All scales to train
+  degradation_mode: bicubic # How to generate LR from GT
+  denoise_sigma: 0.02 # Light noise for 1x denoising task
+
+# AMP & TENSOR CORE OPTIMIZATIONS
+use_amp: true
+amp_bf16: true
+use_channels_last: true
+num_gpu: auto
+use_compile: false
+
+datasets:
+  train:
+    name: TrainDataset
+    type: singleimagedataset # Only GT needed, LR generated on-the-fly
+    dataroot_gt: /home/phips/Documents/dataset/BHI/BEAR
+
+    # GT PATCH SIZE: 256 = 4x of 64 LQ patch for 4x scale
+    gt_size: 256
+    batch_size_per_gpu: 4
+    num_worker_per_gpu: 4
+    accum_iter: 1
+    prefetch_mode: ~
+    pin_memory: true
+
+    use_hflip: true
+    use_rot: true
+
+  val:
+    name: Urban100
+    type: pairedimagedataset
+    dataroot_gt: /home/phips/Documents/dataset/Urban100/HR
+    dataroot_lq: /home/phips/Documents/dataset/Urban100/x4
+
+# ARCHITECTURE CONFIGURATION
+# ----------------------------------------------------------------------------
+network_g:
+  type: paragonsr3_photo_multiscale # Multi-head Photo variant
+  # scales: [1, 2, 3, 4] is default in factory
+
+# TRAINING STRATEGY
+# ----------------------------------------------------------------------------
+path:
+  pretrain_network_g: ~
+  strict_load_g: true
+
+train:
+  ema_decay: 0.999
+  ema_power: 0.75
+  grad_clip: true
+
+  optim_g:
+    type: AdamW
+    lr: !!float 2e-4
+    weight_decay: !!float 1e-4
+    betas: [0.9, 0.99]
+
+  scheduler:
+    type: MultiStepLR
+    milestones: [100000, 200000, 300000]
+    gamma: 0.5
+
+  total_iter: 400000
+  warmup_iter: 3000
+
+  # FIDELITY LOSS: L1 + MSSIM
+  losses:
+    - type: l1loss
+      loss_weight: 1.0
+    - type: mssimloss
+      loss_weight: 0.08
+
+# VALIDATION & METRICS
+# ----------------------------------------------------------------------------
+val:
+  val_enabled: true
+  val_freq: 5000
+  save_img: false
+
+  metrics_enabled: true
+  metrics:
+    psnr:
+      type: calculate_psnr
+      crop_border: 4
+      test_y_channel: true
+    ssim:
+      type: calculate_ssim
+      crop_border: 4
+      test_y_channel: true
+
+# LOGGING & CHECKPOINTING
+# ----------------------------------------------------------------------------
+logger:
+  print_freq: 100
+  save_checkpoint_freq: 10000
+  save_checkpoint_format: safetensors
+  use_tb_logger: true
