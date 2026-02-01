@@ -1,0 +1,240 @@
+#!/usr/bin/env python3
+"""
+LUCID — Learnable Under-sampling Consistency & Integrity Discovery
+================================================================
+Stage 2: Multi-Scale Forward-Backward Consistency Filtering
+"""
+
+import argparse
+import csv
+import shutil
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+import cv2
+import numpy as np
+import torch
+import torch.nn.functional as F
+from torch.amp import autocast
+from torch.utils.data import DataLoader, Dataset
+from tqdm import tqdm
+
+# ====================== CONFIG ======================
+
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+SCALES = {
+    4: {"psnr_min": 25.0},  # hard gate (adjusted for probe ~26dB avg)
+    2: {"psnr_min": 29.0},  # softer gate (easier task)
+}
+
+# Global ThreadPool for asynchronous file copying
+_COPY_EXECUTOR = ThreadPoolExecutor(max_workers=4)
+
+# ====================== MODEL (Required for Unpickling) ======================
+
+
+class SRProbeNet(torch.nn.Module):
+    def __init__(self, scale=4):
+        super().__init__()
+        self.scale = scale
+        self.head = torch.nn.Conv2d(3, 32, 5, padding=2)
+        self.body = torch.nn.Sequential(
+            torch.nn.ReLU(inplace=True),
+            torch.nn.Conv2d(32, 32, 3, padding=1),
+            torch.nn.ReLU(inplace=True),
+            torch.nn.Conv2d(32, 32, 3, padding=1),
+            torch.nn.ReLU(inplace=True),
+        )
+        self.tail = torch.nn.Conv2d(32, 3 * (scale**2), 3, padding=1)
+
+    def forward(self, x):
+        x = self.head(x)
+        x = self.body(x)
+        x = self.tail(x)
+        return F.pixel_shuffle(x, self.scale)
+
+
+# ====================== DATASET ======================
+
+
+class TileDataset(Dataset):
+    def __init__(self, paths):
+        self.paths = sorted(list(paths))
+
+    def __len__(self):
+        return len(self.paths)
+
+    def __getitem__(self, idx):
+        path = self.paths[idx]
+        try:
+            img = cv2.imread(str(path))
+            if img is None:
+                raise ValueError("cv2 failed to load image")
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            arr = img.astype(np.float32) / 255.0
+            t = torch.from_numpy(arr).permute(2, 0, 1)
+            return t, str(path)
+        except Exception:
+            return torch.zeros(3, 512, 512), ""
+
+
+def collate_fn(batch):
+    batch = [b for b in batch if b[1] != ""]
+    if not batch:
+        return torch.tensor([]), []
+    images, paths = zip(*batch)
+    images = torch.stack(images)
+    return images, paths
+
+
+# ====================== CORE ======================
+
+
+def process_batch(model, images, paths, out_dir, log_rows=None):
+    if images.numel() == 0:
+        return 0
+
+    images = images.to(DEVICE, non_blocking=True)
+    batch_size = images.shape[0]
+
+    keep_mask = torch.ones(batch_size, dtype=torch.bool, device=DEVICE)
+
+    # Scale PSNR tracking for logging
+    batch_psnrs = {p: {s: 0.0 for s in SCALES} for p in paths}
+
+    for scale in sorted(SCALES.keys(), reverse=True):
+        cfg = SCALES[scale]
+
+        # If logging, we must continue even if batch fails to get data for all scales
+        # UNLESS we just want to log 0.0 for skipped scales.
+        # To maximize speed, we skip computation if not keeping and NOT logging.
+        if not keep_mask.any() and log_rows is None:
+            break
+
+        lr = F.interpolate(
+            images, scale_factor=1 / scale, mode="bicubic", align_corners=False
+        )
+        with autocast(device_type="cuda"):
+            with torch.no_grad():
+                sr = model(lr).clamp(0, 1)
+        sr = sr.float()
+
+        if sr.shape[-2:] != images.shape[-2:]:
+            sr = F.interpolate(
+                sr, size=images.shape[-2:], mode="bicubic", align_corners=False
+            ).clamp(0, 1)
+
+        mse = ((sr - images) ** 2).mean(dim=[1, 2, 3])
+        psnr_vals = 10 * torch.log10(1.0 / (mse + 1e-8))
+
+        # Track for logging
+        for i, p in enumerate(paths):
+            batch_psnrs[p][scale] = float(psnr_vals[i].item())
+
+        pass_mask = psnr_vals >= cfg["psnr_min"]
+        keep_mask = keep_mask & pass_mask
+
+    cpu_mask = keep_mask.cpu().numpy()
+    kept_count = 0
+
+    for i, path_str in enumerate(paths):
+        src = Path(path_str)
+        is_kept = bool(cpu_mask[i])
+
+        if is_kept:
+            dst = out_dir / src.name
+            _COPY_EXECUTOR.submit(shutil.copy, src, dst)
+            kept_count += 1
+
+        if log_rows is not None:
+            # [filename, psnr_x4, psnr_x2, kept]
+            row = (
+                [src.name]
+                + [
+                    batch_psnrs[path_str][s]
+                    for s in sorted(SCALES.keys(), reverse=True)
+                ]
+                + [is_kept]
+            )
+            log_rows.append(row)
+
+    return kept_count
+
+
+# ====================== MAIN ======================
+
+
+def main():
+    parser = argparse.ArgumentParser(description="LUCID Stage 2: Consistency Filtering")
+    parser.add_argument("--input", required=True, help="Stage 1 output directory")
+    parser.add_argument("--output", required=True, help="Final output directory")
+    parser.add_argument(
+        "--weights", required=True, help="Path to SR Probe weights (.pth)"
+    )
+    parser.add_argument("--csv", help="Optional CSV path for metadata logging")
+    parser.add_argument(
+        "--batch_size", type=int, default=32, help="Batch size (default: 32)"
+    )
+    parser.add_argument("--workers", type=int, default=4, help="DataLoader workers")
+    args = parser.parse_args()
+
+    in_dir = Path(args.input)
+    out_dir = Path(args.output)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"Loading model on {DEVICE}...")
+    model = torch.load(args.weights, map_location=DEVICE, weights_only=False)
+    model.eval()
+    model.to(DEVICE)
+
+    tile_paths = list(in_dir.glob("*.png"))
+    num_tiles = len(tile_paths)
+    print(f"Found {num_tiles} tiles. Batch size: {args.batch_size}")
+
+    dataset = TileDataset(tile_paths)
+    loader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.workers,
+        collate_fn=collate_fn,
+        pin_memory=True,
+        persistent_workers=(args.workers > 0),
+    )
+
+    kept = 0
+    print("GPU Filtering...")
+
+    csv_file = None
+    csv_writer = None
+    if args.csv:
+        csv_file = open(args.csv, "w", newline="")
+        csv_writer = csv.writer(csv_file)
+        # Header: tile, psnr_x4, psnr_x2, kept
+        cols = (
+            ["tile"]
+            + [f"psnr_x{s}" for s in sorted(SCALES.keys(), reverse=True)]
+            + ["kept"]
+        )
+        csv_writer.writerow(cols)
+
+    try:
+        for images, paths in tqdm(loader):
+            log_rows = [] if args.csv else None
+            kept += process_batch(model, images, paths, out_dir, log_rows=log_rows)
+
+            if csv_writer and log_rows:
+                csv_writer.writerows(log_rows)
+    finally:
+        if csv_file:
+            csv_file.close()
+
+    print("\nShutting down async copy threads...")
+    _COPY_EXECUTOR.shutdown(wait=True)
+
+    print(f"Kept {kept}/{num_tiles} tiles")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,84 @@
+phips@NZXT:/media/phips/One Touch/datasets/df2k$ /home/phips/Documents/GitHub/traiNNer-redux/venv/bin/python "/media/phips/One Touch/datasets/bear_v2/train_sr_probe.py"     --train "/media/phips/One Touch/datasets/df2k/DF2K_train_HR"     --val "/media/phips/One Touch/datasets/df2k/DF2K_train_HR"     --output "/media/phips/One Touch/datasets/bear_v2/sr_probe.pth"     --epochs 30     --batch 16
+Training on /media/phips/One Touch/datasets/df2k/DF2K_train_HR, Validating on /media/phips/One Touch/datasets/df2k/DF2K_train_HR
+Epoch 1: 100%|████████████████████████████████| 216/216 [09:28<00:00,  2.63s/it]
+Epoch 01 | Train L1: 0.1606 | Val PSNR: 19.17 dB
+  ✓ Saved new best probe
+Epoch 2: 100%|████████████████████████████████| 216/216 [07:38<00:00,  2.12s/it]
+Epoch 02 | Train L1: 0.0728 | Val PSNR: 20.96 dB
+  ✓ Saved new best probe
+Epoch 3: 100%|████████████████████████████████| 216/216 [07:10<00:00,  1.99s/it]
+Epoch 03 | Train L1: 0.0625 | Val PSNR: 22.50 dB
+  ✓ Saved new best probe
+Epoch 4: 100%|████████████████████████████████| 216/216 [07:17<00:00,  2.02s/it]
+Epoch 04 | Train L1: 0.0535 | Val PSNR: 23.31 dB
+  ✓ Saved new best probe
+Epoch 5: 100%|████████████████████████████████| 216/216 [07:37<00:00,  2.12s/it]
+Epoch 05 | Train L1: 0.0509 | Val PSNR: 23.79 dB
+  ✓ Saved new best probe
+Epoch 6: 100%|████████████████████████████████| 216/216 [07:36<00:00,  2.12s/it]
+Epoch 06 | Train L1: 0.0487 | Val PSNR: 23.69 dB
+Epoch 7: 100%|████████████████████████████████| 216/216 [07:34<00:00,  2.10s/it]
+Epoch 07 | Train L1: 0.0473 | Val PSNR: 24.37 dB
+  ✓ Saved new best probe
+Epoch 8: 100%|████████████████████████████████| 216/216 [07:35<00:00,  2.11s/it]
+Epoch 08 | Train L1: 0.0460 | Val PSNR: 23.75 dB
+Epoch 9: 100%|████████████████████████████████| 216/216 [07:35<00:00,  2.11s/it]
+Epoch 09 | Train L1: 0.0464 | Val PSNR: 24.73 dB
+  ✓ Saved new best probe
+Epoch 10: 100%|███████████████████████████████| 216/216 [07:38<00:00,  2.12s/it]
+Epoch 10 | Train L1: 0.0453 | Val PSNR: 24.90 dB
+  ✓ Saved new best probe
+Epoch 11: 100%|███████████████████████████████| 216/216 [07:39<00:00,  2.13s/it]
+Epoch 11 | Train L1: 0.0447 | Val PSNR: 24.97 dB
+  ✓ Saved new best probe
+Epoch 12: 100%|███████████████████████████████| 216/216 [07:43<00:00,  2.14s/it]
+Epoch 12 | Train L1: 0.0445 | Val PSNR: 25.14 dB
+  ✓ Saved new best probe
+Epoch 13: 100%|███████████████████████████████| 216/216 [07:49<00:00,  2.18s/it]
+Epoch 13 | Train L1: 0.0437 | Val PSNR: 25.23 dB
+  ✓ Saved new best probe
+Epoch 14: 100%|███████████████████████████████| 216/216 [07:53<00:00,  2.19s/it]
+Epoch 14 | Train L1: 0.0431 | Val PSNR: 25.33 dB
+  ✓ Saved new best probe
+Epoch 15: 100%|███████████████████████████████| 216/216 [07:55<00:00,  2.20s/it]
+Epoch 15 | Train L1: 0.0427 | Val PSNR: 25.43 dB
+  ✓ Saved new best probe
+Epoch 16: 100%|███████████████████████████████| 216/216 [07:51<00:00,  2.18s/it]
+Epoch 16 | Train L1: 0.0421 | Val PSNR: 25.40 dB
+Epoch 17: 100%|███████████████████████████████| 216/216 [07:48<00:00,  2.17s/it]
+Epoch 17 | Train L1: 0.0420 | Val PSNR: 25.73 dB
+  ✓ Saved new best probe
+Epoch 18: 100%|███████████████████████████████| 216/216 [07:50<00:00,  2.18s/it]
+Epoch 18 | Train L1: 0.0421 | Val PSNR: 25.67 dB
+Epoch 19: 100%|███████████████████████████████| 216/216 [07:50<00:00,  2.18s/it]
+Epoch 19 | Train L1: 0.0418 | Val PSNR: 25.56 dB
+Epoch 20: 100%|███████████████████████████████| 216/216 [07:50<00:00,  2.18s/it]
+Epoch 20 | Train L1: 0.0411 | Val PSNR: 25.71 dB
+Epoch 21: 100%|███████████████████████████████| 216/216 [07:49<00:00,  2.18s/it]
+Epoch 21 | Train L1: 0.0413 | Val PSNR: 25.46 dB
+Epoch 22: 100%|███████████████████████████████| 216/216 [07:50<00:00,  2.18s/it]
+Epoch 22 | Train L1: 0.0409 | Val PSNR: 25.83 dB
+  ✓ Saved new best probe
+Epoch 23: 100%|███████████████████████████████| 216/216 [07:51<00:00,  2.18s/it]
+Epoch 23 | Train L1: 0.0404 | Val PSNR: 25.84 dB
+  ✓ Saved new best probe
+Epoch 24: 100%|███████████████████████████████| 216/216 [07:49<00:00,  2.17s/it]
+Epoch 24 | Train L1: 0.0405 | Val PSNR: 25.85 dB
+  ✓ Saved new best probe
+Epoch 25: 100%|███████████████████████████████| 216/216 [07:52<00:00,  2.19s/it]
+Epoch 25 | Train L1: 0.0400 | Val PSNR: 25.87 dB
+  ✓ Saved new best probe
+Epoch 26: 100%|███████████████████████████████| 216/216 [07:53<00:00,  2.19s/it]
+Epoch 26 | Train L1: 0.0405 | Val PSNR: 25.93 dB
+  ✓ Saved new best probe
+Epoch 27: 100%|███████████████████████████████| 216/216 [07:54<00:00,  2.20s/it]
+Epoch 27 | Train L1: 0.0395 | Val PSNR: 26.02 dB
+  ✓ Saved new best probe
+Epoch 28: 100%|███████████████████████████████| 216/216 [07:52<00:00,  2.19s/it]
+Epoch 28 | Train L1: 0.0403 | Val PSNR: 25.99 dB
+Epoch 29: 100%|███████████████████████████████| 216/216 [07:51<00:00,  2.18s/it]
+Epoch 29 | Train L1: 0.0396 | Val PSNR: 25.96 dB
+Epoch 30: 100%|███████████████████████████████| 216/216 [07:50<00:00,  2.18s/it]
+Epoch 30 | Train L1: 0.0395 | Val PSNR: 26.18 dB
+  ✓ Saved new best probe
+Best validation PSNR: 26.18 dB
