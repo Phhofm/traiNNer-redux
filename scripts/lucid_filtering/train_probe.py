@@ -1,16 +1,8 @@
 #!/usr/bin/env python3
 """
-Train SR-ProbeNet for Forward-Backward Consistency Filtering
-============================================================
-
-Purpose:
-- NOT a production SR model
-- Used ONLY as a numerical probe
-- Optimized for PSNR / stability
-
-Scale: x4
-Degradation: Bicubic only
-Loss: L1
+LUCID — Learnable Under-sampling Consistency & Integrity Discovery
+================================================================
+Training Script: SR-ProbeNet for Consistency Filtering
 """
 
 import argparse

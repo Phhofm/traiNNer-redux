@@ -7,6 +7,7 @@ Stage 1: Signal-Theoretic Dataset Filtering
 
 import argparse
 import csv
+import os
 import time
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -171,6 +172,12 @@ def process_tile(gray, t):
 
 
 def process_single_image(args_pack):
+    # Set lower priority for worker processes to keep system responsive
+    try:
+        os.nice(10)
+    except Exception:
+        pass
+
     # Unpack arguments for multiprocessing
     img_path, in_dir, out_dir, tile_size, thresholds, scales = args_pack
 
@@ -255,7 +262,7 @@ def process_single_image(args_pack):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="BEAR High-Performance Signal Filter")
+    parser = argparse.ArgumentParser(description="LUCID High-Performance Signal Filter")
     parser.add_argument("input", help="Source dataset directory")
     parser.add_argument("output", help="Directory to save filtered tiles")
     parser.add_argument("csv", help="Metadata CSV file")
@@ -263,7 +270,10 @@ def main():
         "--tile_size", type=int, default=512, help="Tile size (default: 512)"
     )
     parser.add_argument(
-        "--workers", type=int, default=8, help="Number of worker processes"
+        "--workers",
+        type=int,
+        default=None,
+        help="Number of worker processes (default: cores-1)",
     )
     parser.add_argument(
         "--chunksize", type=int, default=40, help="Images per task chunk (default: 40)"
@@ -274,13 +284,23 @@ def main():
     out_dir = Path(args.output)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # 1. LAZY IMAGE FINDING (Save RAM)
     print("Finding images...")
-    images = [
-        p for p in in_dir.rglob("*") if p.suffix.lower() in {".png", ".jpg", ".jpeg"}
-    ]
-    num_imgs = len(images)
-    print(f"Found {num_imgs} images. Target: {args.tile_size}px tiles.")
-    print(f"Dispatching with {args.workers} workers (Chunksize: {args.chunksize})...")
+    valid_extexsions = {".png", ".jpg", ".jpeg"}
+    image_gen = (p for p in in_dir.rglob("*") if p.suffix.lower() in valid_extexsions)
+
+    # Note: We still need total count for TQDM, but we can do it with a faster method
+    # For now, we materialise a small list of paths if needed or just count.
+    # To be perfectly safe, let's use a generator for tasks too.
+
+    # Use a default worker count of cores-1 to keep system responsive
+    max_workers = (
+        args.workers if args.workers is not None else max(1, os.cpu_count() - 1)
+    )
+
+    print(
+        f"Target: {args.tile_size}px tiles. Dispatching with {max_workers} workers..."
+    )
 
     global_stats = {
         "processed_tiles": 0,
@@ -294,22 +314,30 @@ def main():
         "skipped_corrupt": 0,
     }
 
-    # Arguments for workers
-    tasks = [(p, in_dir, out_dir, args.tile_size, THRESHOLDS, SCALES) for p in images]
+    # LAZY TASK GENERATOR
+    tasks = (
+        (p, in_dir, out_dir, args.tile_size, THRESHOLDS, SCALES) for p in image_gen
+    )
 
     start_time = time.time()
     total_saved = 0
+    total_processed = 0
 
     with open(args.csv, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["tile", "scale"])
 
         # Use map with chunksize for significantly lower IPC overhead
-        with ProcessPoolExecutor(max_workers=args.workers) as executor:
-            for stats, rows in tqdm(
-                executor.map(process_single_image, tasks, chunksize=args.chunksize),
-                total=num_imgs,
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            # We don't have total count anymore for the progress bar unless we walk twice.
+            # Walking twice usually is fine if the OS caches metadata.
+            # But let's just stick to a regular tqdm without total if we want ultimate RAM safety.
+            pbar = tqdm(desc="Processing images")
+
+            for result in executor.map(
+                process_single_image, tasks, chunksize=args.chunksize
             ):
+                stats, rows = result
                 # Aggregate
                 for k, v in stats.items():
                     global_stats[k] += v
@@ -318,8 +346,12 @@ def main():
                     writer.writerow(row)
                     total_saved += 1
 
+                total_processed += 1
+                pbar.update(1)
+            pbar.close()
+
     duration = time.time() - start_time
-    imgs_per_sec = num_imgs / duration if duration > 0 else 0
+    imgs_per_sec = total_processed / duration if duration > 0 else 0
 
     print(f"\nSaved {total_saved} tiles")
     print(f"Time: {duration:.2f}s | Speed: {imgs_per_sec:.2f} images/s")

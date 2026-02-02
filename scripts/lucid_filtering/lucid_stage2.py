@@ -7,6 +7,7 @@ Stage 2: Multi-Scale Forward-Backward Consistency Filtering
 
 import argparse
 import csv
+import os
 import shutil
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -29,6 +30,7 @@ SCALES = {
 }
 
 # Global ThreadPool for asynchronous file copying
+# Fixed to 4 workers to prevent overwhelming the disk controller
 _COPY_EXECUTOR = ThreadPoolExecutor(max_workers=4)
 
 # ====================== MODEL (Required for Unpickling) ======================
@@ -68,10 +70,15 @@ class TileDataset(Dataset):
     def __getitem__(self, idx):
         path = self.paths[idx]
         try:
+            # Faster loading with cv2
             img = cv2.imread(str(path))
             if img is None:
                 raise ValueError("cv2 failed to load image")
+
+            # cv2 BGR -> RGB
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+            # To Tensor (CHW 0-1)
             arr = img.astype(np.float32) / 255.0
             t = torch.from_numpy(arr).permute(2, 0, 1)
             return t, str(path)
@@ -80,9 +87,11 @@ class TileDataset(Dataset):
 
 
 def collate_fn(batch):
+    # Filter out failed loads
     batch = [b for b in batch if b[1] != ""]
     if not batch:
         return torch.tensor([]), []
+
     images, paths = zip(*batch)
     images = torch.stack(images)
     return images, paths
@@ -92,6 +101,12 @@ def collate_fn(batch):
 
 
 def process_batch(model, images, paths, out_dir, log_rows=None):
+    # Set lower priority for the processing logic
+    try:
+        os.nice(10)
+    except Exception:
+        pass
+
     if images.numel() == 0:
         return 0
 
@@ -99,16 +114,11 @@ def process_batch(model, images, paths, out_dir, log_rows=None):
     batch_size = images.shape[0]
 
     keep_mask = torch.ones(batch_size, dtype=torch.bool, device=DEVICE)
-
-    # Scale PSNR tracking for logging
     batch_psnrs = {p: {s: 0.0 for s in SCALES} for p in paths}
 
     for scale in sorted(SCALES.keys(), reverse=True):
         cfg = SCALES[scale]
 
-        # If logging, we must continue even if batch fails to get data for all scales
-        # UNLESS we just want to log 0.0 for skipped scales.
-        # To maximize speed, we skip computation if not keeping and NOT logging.
         if not keep_mask.any() and log_rows is None:
             break
 
@@ -128,7 +138,6 @@ def process_batch(model, images, paths, out_dir, log_rows=None):
         mse = ((sr - images) ** 2).mean(dim=[1, 2, 3])
         psnr_vals = 10 * torch.log10(1.0 / (mse + 1e-8))
 
-        # Track for logging
         for i, p in enumerate(paths):
             batch_psnrs[p][scale] = float(psnr_vals[i].item())
 
@@ -148,7 +157,6 @@ def process_batch(model, images, paths, out_dir, log_rows=None):
             kept_count += 1
 
         if log_rows is not None:
-            # [filename, psnr_x4, psnr_x2, kept]
             row = (
                 [src.name]
                 + [
@@ -167,28 +175,32 @@ def process_batch(model, images, paths, out_dir, log_rows=None):
 
 def main():
     parser = argparse.ArgumentParser(description="LUCID Stage 2: Consistency Filtering")
-    parser.add_argument("--input", required=True, help="Stage 1 output directory")
-    parser.add_argument("--output", required=True, help="Final output directory")
-    parser.add_argument(
-        "--weights", required=True, help="Path to SR Probe weights (.pth)"
-    )
+    parser.add_argument("--input", required=True)
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--weights", required=True)
     parser.add_argument("--csv", help="Optional CSV path for metadata logging")
     parser.add_argument(
         "--batch_size", type=int, default=32, help="Batch size (default: 32)"
     )
-    parser.add_argument("--workers", type=int, default=4, help="DataLoader workers")
+    parser.add_argument(
+        "--workers", type=int, default=None, help="DataLoader workers (default: 4)"
+    )
     args = parser.parse_args()
 
     in_dir = Path(args.input)
     out_dir = Path(args.output)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Reserve CPU resources for the desktop
+    num_workers = args.workers if args.workers is not None else 4
+
     print(f"Loading model on {DEVICE}...")
     model = torch.load(args.weights, map_location=DEVICE, weights_only=False)
     model.eval()
     model.to(DEVICE)
 
-    tile_paths = list(in_dir.glob("*.png"))
+    # Use a generator to load paths lazily
+    tile_paths = sorted(list(in_dir.glob("*.png")))
     num_tiles = len(tile_paths)
     print(f"Found {num_tiles} tiles. Batch size: {args.batch_size}")
 
@@ -197,10 +209,10 @@ def main():
         dataset,
         batch_size=args.batch_size,
         shuffle=False,
-        num_workers=args.workers,
+        num_workers=num_workers,
         collate_fn=collate_fn,
         pin_memory=True,
-        persistent_workers=(args.workers > 0),
+        persistent_workers=(num_workers > 0),
     )
 
     kept = 0
@@ -211,7 +223,6 @@ def main():
     if args.csv:
         csv_file = open(args.csv, "w", newline="")
         csv_writer = csv.writer(csv_file)
-        # Header: tile, psnr_x4, psnr_x2, kept
         cols = (
             ["tile"]
             + [f"psnr_x{s}" for s in sorted(SCALES.keys(), reverse=True)]
