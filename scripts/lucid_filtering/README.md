@@ -49,15 +49,15 @@ python lucid.py train --train "/path/to/DF2K_HR" --output sr_probe.pth
 ### 2. Run the Full Pipeline
 Recommened for most users. This runs Stage 1 (Signal) and Stage 2 (Consistency) sequentially.
 ```bash
-python lucid.py run-all --input "/path/to/raw_data" --output "./lucid_final" --weights sr_probe.pth --tile_size 512
+python lucid.py run-all --input "/path/to/raw_data" --output "./lucid_final" --weights sr_probe.pth --tile_size 256
 ```
-*Use `--tile_size 256` for small source images (e.g. PASS).*
+*Note: 256px is the default tile size, optimized for datasets like PASS. Use `--tile_size 512` for high-resolution sources like DF2K.*
 
 ### 3. Manual Steps (Optional)
 If you want granular control:
 ```bash
 # Stage 1 Only
-python lucid.py stage1 --input "/in" --output "/out1" --tile_size 512 --workers 8
+python lucid.py stage1 --input "/in" --output "/out1" --tile_size 256 --workers 8
 
 # Stage 2 Only (with CSV logging for manual review)
 python lucid.py stage2 --input "/out1" --output "/final" --weights sr_probe.pth --csv results.csv

@@ -267,7 +267,7 @@ def main():
     parser.add_argument("output", help="Directory to save filtered tiles")
     parser.add_argument("csv", help="Metadata CSV file")
     parser.add_argument(
-        "--tile_size", type=int, default=512, help="Tile size (default: 512)"
+        "--tile_size", type=int, default=256, help="Tile size (default: 256)"
     )
     parser.add_argument(
         "--workers",

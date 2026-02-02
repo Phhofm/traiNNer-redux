@@ -43,7 +43,7 @@ def main():
     p_s1.add_argument("--input", required=True, help="Input dataset directory")
     p_s1.add_argument("--output", required=True, help="Stage 1 output directory")
     p_s1.add_argument("--csv", default="lucid_stage1_stats.csv", help="Stats CSV path")
-    p_s1.add_argument("--tile_size", type=int, default=512)
+    p_s1.add_argument("--tile_size", type=int, default=256)
     p_s1.add_argument(
         "--workers",
         type=int,
@@ -71,7 +71,7 @@ def main():
     p_all.add_argument("--input", required=True, help="Input dataset directory")
     p_all.add_argument("--output", required=True, help="Final output directory")
     p_all.add_argument("--weights", default="sr_probe.pth", help="Probe weights path")
-    p_all.add_argument("--tile_size", type=int, default=512)
+    p_all.add_argument("--tile_size", type=int, default=256)
     p_all.add_argument(
         "--temp",
         default="./lucid_stage1_tmp",
