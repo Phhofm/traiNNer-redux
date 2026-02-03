@@ -136,6 +136,31 @@ def noise_ratio(gray):
 # ========================= PIPELINE =========================
 
 
+def process_chunk_worker(chunk):
+    """
+    Helper for multiprocessing chunking.
+    Processes a list of tasks and returns their results.
+    """
+    results = []
+    for task in chunk:
+        results.append(process_single_image(task))
+    return results
+
+
+def chunked_gen(it, size):
+    """
+    Yields chunks of items from an iterator.
+    """
+    chunk = []
+    for item in it:
+        chunk.append(item)
+        if len(chunk) >= size:
+            yield chunk
+            chunk = []
+    if chunk:
+        yield chunk
+
+
 def process_tile(gray, t):
     """
     TIERED FILTERING (Early Exit)
@@ -284,23 +309,25 @@ def main():
     out_dir = Path(args.output)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. LAZY IMAGE FINDING (Save RAM)
+    # 1. FAST IMAGE FINDING
     print("Finding images...")
-    valid_extexsions = {".png", ".jpg", ".jpeg"}
-    image_gen = (p for p in in_dir.rglob("*") if p.suffix.lower() in valid_extexsions)
+    valid_extensions = {".png", ".jpg", ".jpeg"}
 
-    # Note: We still need total count for TQDM, but we can do it with a faster method
-    # For now, we materialise a small list of paths if needed or just count.
-    # To be perfectly safe, let's use a generator for tasks too.
+    # Materialize once to get total count, but keep it efficient
+    images = [p for p in in_dir.rglob("*") if p.suffix.lower() in valid_extensions]
+    num_imgs = len(images)
+
+    if num_imgs == 0:
+        print("!! No images found in input directory.")
+        return
 
     # Use a default worker count of cores-1 to keep system responsive
     max_workers = (
         args.workers if args.workers is not None else max(1, os.cpu_count() - 1)
     )
 
-    print(
-        f"Target: {args.tile_size}px tiles. Dispatching with {max_workers} workers..."
-    )
+    print(f"Found {num_imgs} images. Target: {args.tile_size}px tiles.")
+    print(f"Dispatching with {max_workers} workers (Chunksize: {args.chunksize})...")
 
     global_stats = {
         "processed_tiles": 0,
@@ -314,40 +341,71 @@ def main():
         "skipped_corrupt": 0,
     }
 
-    # LAZY TASK GENERATOR
-    tasks = (
-        (p, in_dir, out_dir, args.tile_size, THRESHOLDS, SCALES) for p in image_gen
-    )
-
     start_time = time.time()
     total_saved = 0
     total_processed = 0
+
+    from concurrent.futures import as_completed
 
     with open(args.csv, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["tile", "scale"])
 
-        # Use map with chunksize for significantly lower IPC overhead
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            # We don't have total count anymore for the progress bar unless we walk twice.
-            # Walking twice usually is fine if the OS caches metadata.
-            # But let's just stick to a regular tqdm without total if we want ultimate RAM safety.
-            pbar = tqdm(desc="Processing images")
+            pbar = tqdm(total=num_imgs, desc="Processing images")
 
-            for result in executor.map(
-                process_single_image, tasks, chunksize=args.chunksize
-            ):
-                stats, rows = result
-                # Aggregate
-                for k, v in stats.items():
-                    global_stats[k] += v
+            # Arguments for workers
+            tasks_gen = (
+                (p, in_dir, out_dir, args.tile_size, THRESHOLDS, SCALES) for p in images
+            )
 
-                for row in rows:
-                    writer.writerow(row)
-                    total_saved += 1
+            # Submit initial batch of chunks
+            # We limit the number of active futures to prevent RAM explosion
+            max_active_chunks = max_workers * 2
+            chunk_generator = chunked_gen(tasks_gen, args.chunksize)
 
-                total_processed += 1
-                pbar.update(1)
+            futures = {}  # {future: chunk_size}
+
+            # Fill the initial buffer
+            for _ in range(max_active_chunks):
+                try:
+                    chunk = next(chunk_generator)
+                    fut = executor.submit(process_chunk_worker, chunk)
+                    futures[fut] = len(chunk)
+                except StopIteration:
+                    break
+
+            while futures:
+                # wait for any chunk to complete
+                for fut in as_completed(futures):
+                    chunk_size = futures.pop(fut)
+                    try:
+                        chunk_results = fut.result()
+
+                        # Aggregate results from chunk
+                        for stats, rows in chunk_results:
+                            for k, v in stats.items():
+                                global_stats[k] += v
+                            for row in rows:
+                                writer.writerow(row)
+                                total_saved += 1
+                            total_processed += 1
+
+                        pbar.update(chunk_size)
+                    except Exception as e:
+                        print(f"\n!! Error in worker chunk: {e}")
+
+                    # Submit a new chunk to replace the finished one
+                    try:
+                        next_chunk = next(chunk_generator)
+                        new_fut = executor.submit(process_chunk_worker, next_chunk)
+                        futures[new_fut] = len(next_chunk)
+                    except StopIteration:
+                        pass
+
+                    # break to iterate the loop and update progress faster
+                    break
+
             pbar.close()
 
     duration = time.time() - start_time
