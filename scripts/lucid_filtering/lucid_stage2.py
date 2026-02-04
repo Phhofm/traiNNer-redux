@@ -37,7 +37,7 @@ _COPY_EXECUTOR = ThreadPoolExecutor(max_workers=4)
 
 
 class SRProbeNet(torch.nn.Module):
-    def __init__(self, scale=4):
+    def __init__(self, scale=4) -> None:
         super().__init__()
         self.scale = scale
         self.head = torch.nn.Conv2d(3, 32, 5, padding=2)
@@ -61,10 +61,10 @@ class SRProbeNet(torch.nn.Module):
 
 
 class TileDataset(Dataset):
-    def __init__(self, paths):
-        self.paths = sorted(list(paths))
+    def __init__(self, paths) -> None:
+        self.paths = sorted(paths)
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.paths)
 
     def __getitem__(self, idx):
@@ -83,16 +83,16 @@ class TileDataset(Dataset):
             t = torch.from_numpy(arr).permute(2, 0, 1)
             return t, str(path)
         except Exception:
-            return torch.zeros(3, 512, 512), ""
+            return None, ""
 
 
 def collate_fn(batch):
-    # Filter out failed loads
-    batch = [b for b in batch if b[1] != ""]
+    # Filter out failed loads (None from __getitem__)
+    batch = [b for b in batch if b[0] is not None]
     if not batch:
-        return torch.tensor([]), []
+        return None, []
 
-    images, paths = zip(*batch)
+    images, paths = zip(*batch, strict=False)
     images = torch.stack(images)
     return images, paths
 
@@ -107,14 +107,14 @@ def process_batch(model, images, paths, out_dir, log_rows=None):
     except Exception:
         pass
 
-    if images.numel() == 0:
+    if images is None or images.numel() == 0:
         return 0
 
-    images = images.to(DEVICE, non_blocking=True)
+    images = images.to(DEVICE)
     batch_size = images.shape[0]
 
     keep_mask = torch.ones(batch_size, dtype=torch.bool, device=DEVICE)
-    batch_psnrs = {p: {s: 0.0 for s in SCALES} for p in paths}
+    batch_psnrs = {p: dict.fromkeys(SCALES, 0.0) for p in paths}
 
     for scale in sorted(SCALES.keys(), reverse=True):
         cfg = SCALES[scale]
@@ -173,7 +173,7 @@ def process_batch(model, images, paths, out_dir, log_rows=None):
 # ====================== MAIN ======================
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="LUCID Stage 2: Consistency Filtering")
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", required=True)
@@ -200,19 +200,19 @@ def main():
     model.to(DEVICE)
 
     # Use a generator to load paths lazily
-    tile_paths = sorted(list(in_dir.glob("*.png")))
+    tile_paths = sorted(in_dir.glob("*.png"))
     num_tiles = len(tile_paths)
     print(f"Found {num_tiles} tiles. Batch size: {args.batch_size}")
 
     dataset = TileDataset(tile_paths)
+    # Use num_workers=0 and pin_memory=False for maximum reliability in long loops
     loader = DataLoader(
         dataset,
         batch_size=args.batch_size,
         shuffle=False,
-        num_workers=num_workers,
+        num_workers=0,
         collate_fn=collate_fn,
-        pin_memory=True,
-        persistent_workers=(num_workers > 0),
+        pin_memory=False,
     )
 
     kept = 0
@@ -221,17 +221,22 @@ def main():
     csv_file = None
     csv_writer = None
     if args.csv:
-        csv_file = open(args.csv, "w", newline="")
+        file_exists = os.path.isfile(args.csv)
+        csv_file = open(args.csv, "a", newline="")
         csv_writer = csv.writer(csv_file)
-        cols = (
-            ["tile"]
-            + [f"psnr_x{s}" for s in sorted(SCALES.keys(), reverse=True)]
-            + ["kept"]
-        )
-        csv_writer.writerow(cols)
+        if not file_exists:
+            cols = (
+                ["tile"]
+                + [f"psnr_x{s}" for s in sorted(SCALES.keys(), reverse=True)]
+                + ["kept"]
+            )
+            csv_writer.writerow(cols)
 
     try:
-        for images, paths in tqdm(loader):
+        for item in tqdm(loader):
+            if item is None or item[0] is None:
+                continue
+            images, paths = item
             log_rows = [] if args.csv else None
             kept += process_batch(model, images, paths, out_dir, log_rows=log_rows)
 

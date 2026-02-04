@@ -267,18 +267,37 @@ def process_single_image(args_pack):
                 passed, reason = process_tile(gray_tile, thresholds)
 
                 if passed:
-                    # Save with cv2 (usually faster than PIL)
-                    # Note: cv2 uses BGR, we have RGB
+                    # To provide "useful stats", we recalculate the metrics for the PASSED tiles
+                    # Performance hit is negligible since most tiles are rejected early
+                    e = entropy(gray_tile)
+                    lap = laplacian_variance(gray_tile)
+                    ge = gradient_energy(gray_tile)
+                    blck = blockiness(gray_tile)
+                    alias = aliasing_ratio(gray_tile)
+                    noise = noise_ratio(gray_tile)
+
+                    # Save with cv2
                     rgb_tile = scaled_rgb[y0:y1, x0:x1]
                     bgr_tile = cv2.cvtColor(rgb_tile, cv2.COLOR_RGB2BGR)
                     fname = f"{name_base}_{suf}_{y}_{x}.png"
                     cv2.imwrite(str(out_dir / fname), bgr_tile)
 
-                    csv_rows.append([fname, suf])
+                    # Log rich stats: [fname, scale, entropy, lap, grad, block, alias, noise]
+                    csv_rows.append(
+                        [
+                            fname,
+                            suf,
+                            f"{e:.2f}",
+                            f"{lap:.1f}",
+                            f"{ge:.2f}",
+                            f"{blck:.2f}",
+                            f"{alias:.2f}",
+                            f"{noise:.2f}",
+                        ]
+                    )
                     local_stats["saved_tiles"] += 1
-                else:
-                    if reason:
-                        local_stats[reason] += 1
+                elif reason:
+                    local_stats[reason] += 1
 
     return local_stats, csv_rows
 
@@ -286,7 +305,7 @@ def process_single_image(args_pack):
 # ========================= MAIN =========================
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="LUCID High-Performance Signal Filter")
     parser.add_argument("input", help="Source dataset directory")
     parser.add_argument("output", help="Directory to save filtered tiles")
@@ -303,22 +322,30 @@ def main():
     parser.add_argument(
         "--chunksize", type=int, default=40, help="Images per task chunk (default: 40)"
     )
+    parser.add_argument(
+        "--file_list", help="Optional path to a .txt file containing image paths"
+    )
     args = parser.parse_args()
 
     in_dir = Path(args.input)
     out_dir = Path(args.output)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. FAST IMAGE FINDING
-    print("Finding images...")
-    valid_extensions = {".png", ".jpg", ".jpeg"}
+    # 1. IMAGE FINDING
+    if args.file_list:
+        print(f"Loading image list from {args.file_list}...")
+        with open(args.file_list) as f:
+            images = [Path(line.strip()) for line in f if line.strip()]
+    else:
+        print("Finding images...")
+        valid_extensions = {".png", ".jpg", ".jpeg"}
+        # Materialize once to get total count, but keep it efficient
+        images = [p for p in in_dir.rglob("*") if p.suffix.lower() in valid_extensions]
 
-    # Materialize once to get total count, but keep it efficient
-    images = [p for p in in_dir.rglob("*") if p.suffix.lower() in valid_extensions]
     num_imgs = len(images)
 
     if num_imgs == 0:
-        print("!! No images found in input directory.")
+        print("!! No images found.")
         return
 
     # Use a default worker count of cores-1 to keep system responsive
@@ -347,9 +374,23 @@ def main():
 
     from concurrent.futures import as_completed
 
-    with open(args.csv, "w", newline="") as f:
+    # If file exists, don't write header again
+    file_exists = os.path.isfile(args.csv)
+    with open(args.csv, "a", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["tile", "scale"])
+        if not file_exists:
+            writer.writerow(
+                [
+                    "tile",
+                    "scale",
+                    "entropy",
+                    "lap_var",
+                    "grad_energy",
+                    "blockiness",
+                    "aliasing",
+                    "noise_ratio",
+                ]
+            )
 
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
             pbar = tqdm(total=num_imgs, desc="Processing images")

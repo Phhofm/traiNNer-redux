@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 
-def run_cmd(cmd):
+def run_cmd(cmd) -> None:
     print(f"\n>> Running: {' '.join(cmd)}")
     # Inherit existing env but add safety if needed
     result = subprocess.run(cmd)
@@ -21,7 +21,7 @@ def run_cmd(cmd):
         sys.exit(result.returncode)
 
 
-def main():
+def main() -> None:
     # Reserve one CPU core by default to keep system responsive
     default_workers = max(1, os.cpu_count() - 1)
 
@@ -66,16 +66,26 @@ def main():
 
     # Command: run-all (The "Intelligent" entry point)
     p_all = subparsers.add_parser(
-        "run-all", help="Run Stage 1 and Stage 2 sequentially"
+        "run-all", help="Run Stage 1 and Stage 2 in batches (Disk Safe)"
     )
     p_all.add_argument("--input", required=True, help="Input dataset directory")
     p_all.add_argument("--output", required=True, help="Final output directory")
     p_all.add_argument("--weights", default="sr_probe.pth", help="Probe weights path")
     p_all.add_argument("--tile_size", type=int, default=256)
     p_all.add_argument(
-        "--temp",
-        default="./lucid_stage1_tmp",
-        help="Temporary directory for Stage 1 results",
+        "--temp", default="./lucid_stage1_tmp", help="Temp folder for tiles"
+    )
+    p_all.add_argument(
+        "--batch_images",
+        type=int,
+        default=10000,
+        help="Images per batch (default: 10000)",
+    )
+    p_all.add_argument(
+        "--start_batch",
+        type=int,
+        default=1,
+        help="Batch to start from (default: 1)",
     )
     p_all.add_argument(
         "--workers",
@@ -86,6 +96,7 @@ def main():
 
     args = parser.parse_args()
 
+    # Get script directory to find teammates
     script_dir = Path(__file__).parent.absolute()
 
     if args.command == "train":
@@ -139,39 +150,92 @@ def main():
         run_cmd(cmd)
 
     elif args.command == "run-all":
-        # 1. Stage 1
-        s1_out = Path(args.temp)
-        s1_csv = s1_out.parent / "lucid_stage1_stats.csv"
-        print("\n=== Starting LUCID Stage 1 (Resource Safe) ===")
-        cmd1 = [
-            sys.executable,
-            str(script_dir / "lucid_stage1.py"),
-            args.input,
-            str(s1_out),
-            str(s1_csv),
-            "--tile_size",
-            str(args.tile_size),
-            "--workers",
-            str(args.workers),
-        ]
-        run_cmd(cmd1)
+        in_dir = Path(args.input)
+        out_dir = Path(args.output)
+        temp_dir = Path(args.temp)
 
-        # 2. Stage 2
-        print("\n=== Starting LUCID Stage 2 (Resource Safe) ===")
-        s2_csv = Path(args.output).parent / "lucid_stage2_psnr.csv"
-        cmd2 = [
-            sys.executable,
-            str(script_dir / "lucid_stage2.py"),
-            "--input",
-            str(s1_out),
-            "--output",
-            args.output,
-            "--weights",
-            args.weights,
-            "--csv",
-            str(s2_csv),
-        ]
-        run_cmd(cmd2)
+        # 0. Find all images
+        print(f"Scanning for images in {in_dir}...")
+        valid_exts = {".png", ".jpg", ".jpeg"}
+        all_images = sorted(
+            [str(p) for p in in_dir.rglob("*") if p.suffix.lower() in valid_exts]
+        )
+        num_imgs = len(all_images)
+
+        if num_imgs == 0:
+            print("!! No images found. Exiting.")
+            sys.exit(0)
+
+        print(f"Found {num_imgs} images. Batch size: {args.batch_images}")
+
+        # 1. Batch Processing Loop
+        num_batches = (num_imgs + args.batch_images - 1) // args.batch_images
+
+        # Pre-cleanup of stats files only if starting fresh
+        s1_csv = out_dir.parent / "lucid_stage1_stats.csv"
+        s2_csv = out_dir.parent / "lucid_stage2_psnr.csv"
+        if args.start_batch <= 1:
+            for f in [s1_csv, s2_csv]:
+                if f.exists():
+                    f.unlink()
+
+        for i in range(args.start_batch - 1, num_batches):
+            start_idx = i * args.batch_images
+            end_idx = min((i + 1) * args.batch_images, num_imgs)
+            batch = all_images[start_idx:end_idx]
+
+            print(f"\n--- Batch {i + 1}/{num_batches} ({len(batch)} images) ---")
+
+            # Write batch file list
+            batch_list_path = temp_dir.parent / "lucid_batch_list.txt"
+            temp_dir.mkdir(parents=True, exist_ok=True)
+            with open(batch_list_path, "w") as f:
+                for img in batch:
+                    f.write(f"{img}\n")
+
+            # Run Stage 1
+            cmd1 = [
+                sys.executable,
+                str(script_dir / "lucid_stage1.py"),
+                args.input,
+                str(temp_dir),
+                str(s1_csv),
+                "--tile_size",
+                str(args.tile_size),
+                "--workers",
+                str(args.workers),
+                "--file_list",
+                str(batch_list_path),
+            ]
+            run_cmd(cmd1)
+
+            # Run Stage 2
+            cmd2 = [
+                sys.executable,
+                str(script_dir / "lucid_stage2.py"),
+                "--input",
+                str(temp_dir),
+                "--output",
+                str(out_dir),
+                "--weights",
+                args.weights,
+                "--csv",
+                str(s2_csv),
+            ]
+            run_cmd(cmd2)
+
+            # CLEANUP: Delete temporary tiles
+            print(f"Cleaning up {temp_dir}...")
+            # Delete all png files in temp_dir
+            for f in temp_dir.glob("*.png"):
+                try:
+                    f.unlink()
+                except Exception:
+                    pass
+
+        # Final cleanup of the batch file
+        if batch_list_path.exists():
+            batch_list_path.unlink()
 
         print("\n=== LUCID Pipeline Complete ===")
         print(f"Final dataset: {args.output}")
