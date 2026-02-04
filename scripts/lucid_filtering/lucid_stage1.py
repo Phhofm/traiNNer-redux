@@ -338,7 +338,7 @@ def main() -> None:
             images = [Path(line.strip()) for line in f if line.strip()]
     else:
         print("Finding images...")
-        valid_extensions = {".png", ".jpg", ".jpeg"}
+        valid_extensions = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif"}
         # Materialize once to get total count, but keep it efficient
         images = [p for p in in_dir.rglob("*") if p.suffix.lower() in valid_extensions]
 

@@ -10,9 +10,9 @@ import random
 from pathlib import Path
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from PIL import Image
+from torch import nn
 from torch.utils.data import DataLoader, Dataset
 from torchvision.transforms import functional as TF
 from tqdm import tqdm
@@ -34,7 +34,7 @@ OUT_PATH = "sr_probe_x4.pth"
 
 
 class SRProbeNet(nn.Module):
-    def __init__(self, scale=4):
+    def __init__(self, scale=4) -> None:
         super().__init__()
         self.scale = scale
         self.head = nn.Conv2d(3, 32, 5, padding=2)
@@ -58,10 +58,11 @@ class SRProbeNet(nn.Module):
 
 
 class HRDataset(Dataset):
-    def __init__(self, root):
-        self.paths = list(Path(root).glob("*.png"))
+    def __init__(self, root) -> None:
+        valid_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif"}
+        self.paths = [p for p in Path(root).glob("*") if p.suffix.lower() in valid_exts]
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.paths)
 
     def __getitem__(self, idx):
@@ -106,7 +107,7 @@ def psnr(sr, hr):
 # ===================== TRAIN =====================
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Train SR Probe")
     parser.add_argument(
         "--train", type=str, default="DIV2K_train_HR", help="Path to training images"

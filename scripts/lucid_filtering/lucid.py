@@ -156,7 +156,7 @@ def main() -> None:
 
         # 0. Find all images
         print(f"Scanning for images in {in_dir}...")
-        valid_exts = {".png", ".jpg", ".jpeg"}
+        valid_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif"}
         all_images = sorted(
             [str(p) for p in in_dir.rglob("*") if p.suffix.lower() in valid_exts]
         )
