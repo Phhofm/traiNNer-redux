@@ -110,8 +110,8 @@ def aliasing_ratio(gray):
 
 def gradient_energy(gray):
     # OpenCV Sobel is fast
-    gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
-    gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+    gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3) / 8.0
+    gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3) / 8.0
     mag = cv2.sqrt(gx**2 + gy**2)
     return float(np.mean(mag))
 
@@ -125,9 +125,9 @@ def noise_ratio(gray):
     hf = gray.astype(np.float32) - blur.astype(np.float32)
     hf_energy = np.mean(hf**2)
 
-    # Structured energy proxy
-    gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
-    gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+    # Normalized Sobel energy
+    gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3) / 8.0
+    gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3) / 8.0
     grad_energy = np.mean(gx**2 + gy**2)
 
     return float(hf_energy / (grad_energy + 1e-9))
