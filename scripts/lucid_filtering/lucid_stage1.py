@@ -33,7 +33,7 @@ THRESHOLDS = {
     "lap_var_max": 8000.0,  # Increased for sharp DF2K
     "blockiness_max": 40.0,  # Relaxed
     "aliasing_max": 0.60,  # Relaxed
-    "grad_energy_min": 5.0,
+    "grad_energy_min": 0.75,
     "noise_ratio_max": 0.60,
 }
 
