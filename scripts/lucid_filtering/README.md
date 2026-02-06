@@ -26,6 +26,26 @@ This is the "Mathematical Gate." It uses a lightweight **SR Probe** to test the 
 3. **Verify:** If the PSNR is high, the tile is **Consistent**. The mapping is predictable and clean.
 4. **Reject:** If PSNR is low, the tile has a "Consistency Gap"—it contains information that doesn't follow the laws of your degradation model. These are "unreliable teachers" and are purged.
 
+### 4. Elite Dataset Pruning (Optional)
+Once you have your merged tile folder and Stage 2 logs, you can prune the dataset to keep only the mathematically "Elite" tiles (e.g., Top 10% or 25%). This is the secret for winning PSNR benchmarks like Urban100.
+
+```bash
+python lucid_prune.py \
+    --img_dir "/path/to/tiles" \
+    --out_dir "/path/to/elite_folder" \
+    --master_csv "/path/to/lucid_elite_master.csv" \
+    --s2_csv_paths "/path/to/stage2_psnr.csv" \
+    --s1_csv_paths "/path/to/stage1_stats.csv" \
+    --top_percent 25 \
+    --rename_index
+```
+
+*   **Copying by default:** The script now performs a full physical copy of the images by default, making the output folder "distribution-ready" and portable.
+*   **Separate Metadata:** The `--master_csv` argument allows you to store the dataset statistics anywhere, keeping your image folder clean.
+*   **Index Renaming:** Use `--rename_index` to simplify filenames to `0.png`, `1.png`, etc., while maintaining the mapping in the Master CSV.
+
+---
+
 #### 🔬 The SR Probe Architecture
 The included `SRProbeNet` is a minimalist, ultra-fast architecture spiritually and structurally similar to **ArtCNN**.
 - **Lightweight Design:** It uses a 5x5 head, a 3-layer 32-channel body, and a PixelShuffle tail.
