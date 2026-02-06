@@ -286,9 +286,16 @@ class SRModel(BaseModel):
 
                 if self.use_compile:
                     logger.info(
-                        "Compiling loss %s. This may take several minutes...", label
+                        "Compiling loss %s with mode: %s (dynamic=%s). This may take several minutes...",
+                        label,
+                        self.opt.compile_mode,
+                        self.opt.compile_dynamic,
                     )
-                    self.losses[label] = torch.compile(self.losses[label])
+                    self.losses[label] = torch.compile(
+                        self.losses[label],
+                        mode=self.opt.compile_mode,
+                        dynamic=self.opt.compile_dynamic,
+                    )
 
         assert self.losses, "At least one loss must be defined."
 
