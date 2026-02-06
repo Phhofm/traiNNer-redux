@@ -485,6 +485,18 @@ class ReduxOptions(StrictStruct):
             description="Enable torch.compile for the generator model, which takes time on startup to compile the model, but can speed up training after the model is compiled. However, compilation must be redone when starting training each time, as the compiled model is not saved, so for models that take too long to compile it may not worth it."
         ),
     ] = False
+    compile_mode: Annotated[
+        Literal["default", "reduce-overhead", "max-autotune"],
+        Meta(
+            description="Compilation mode. default: standard, reduce-overhead: focuses on reducing Python overhead (best for small/medium models), max-autotune: exhaustive search for fastest kernels (slowest to compile)."
+        ),
+    ] = "reduce-overhead"
+    compile_dynamic: Annotated[
+        bool,
+        Meta(
+            description="Whether to enable dynamic shape support for compilation. Increases compilation time and may reduce performance if shapes are fixed."
+        ),
+    ] = False
     detect_anomaly: Annotated[
         bool,
         Meta(

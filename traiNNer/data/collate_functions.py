@@ -6,7 +6,8 @@ before data reaches DataLoader's pin_memory operation, resolving bf16 +
 channels_last + pin_memory compatibility issues.
 """
 
-from typing import Any, Dict, List, Union
+from collections.abc import Callable
+from typing import Any
 
 import torch
 from torch.utils.data import default_collate
@@ -39,15 +40,15 @@ def channels_last_collate_fn(
     # Convert tensors to channels_last memory format
     for key, value in collated.items():
         if (
-            torch.is_tensor(value) and value.dim() >= 3
-        ):  # Only convert tensors with 3+ dims
+            torch.is_tensor(value) and value.dim() == 4
+        ):  # Only convert 4D tensors (NCHW) to channels_last
             if not value.is_contiguous(memory_format=memory_format):
                 collated[key] = value.contiguous(memory_format=memory_format)
 
     return collated
 
 
-def create_collate_function(opt: ReduxOptions):
+def create_collate_function(opt: ReduxOptions) -> Callable:
     """
     Create appropriate collate function based on training settings.
 

@@ -43,6 +43,8 @@ class Registry:
         if isinstance(suffix, str):
             name = name + "_" + suffix
 
+        name = name.lower()
+
         assert name not in self._obj_map, (
             f"An object named '{name}' was already registered "
             f"in '{self._name}' registry!"

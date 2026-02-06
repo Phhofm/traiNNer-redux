@@ -225,9 +225,16 @@ class BaseModel:
         if self.opt.use_compile:
             logger = get_root_logger()
             logger.info(
-                "Compiling network %s. This may take several minutes...", net_name
+                "Compiling network %s with mode: %s (dynamic=%s). This may take several minutes...",
+                net_name,
+                self.opt.compile_mode,
+                self.opt.compile_dynamic,
             )
-            net = torch.compile(net, dynamic=True, mode="max-autotune")  # pyright: ignore[reportAssignmentType]
+            net = torch.compile(  # pyright: ignore[reportAssignmentType]
+                net,
+                dynamic=self.opt.compile_dynamic,
+                mode=self.opt.compile_mode,
+            )
 
         return net
 
