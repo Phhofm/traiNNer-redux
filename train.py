@@ -3,6 +3,7 @@ import os
 from torch.distributed import destroy_process_group
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "1"
+os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 from traiNNer.check.check_dependencies import check_dependencies
 
 if __name__ == "__main__":
@@ -786,6 +787,11 @@ def train_pipeline(root_path: str) -> None:
                                 ].batch_size_per_gpu
                                 suggested_batch_size = max(1, current_batch_size // 2)
                                 suggested_lq_size = opt.datasets["train"].lq_size // 2
+                                # Update opt so reductions are persistent
+                                opt.datasets[
+                                    "train"
+                                ].batch_size_per_gpu = suggested_batch_size
+                                opt.datasets["train"].lq_size = suggested_lq_size
 
                             # Apply OOM recovery to dynamic wrappers
                             if dynamic_dataloader_wrapper:
@@ -842,6 +848,7 @@ def train_pipeline(root_path: str) -> None:
 
                         # Reset prefetcher to discard queued batches with old (large) size
                         prefetcher.reset()
+                        train_data = prefetcher.next()
                         # Retry the iteration (continue the loop)
                         logger.info(
                             "OOM Recovery successful. Retrying iteration with reduced parameters."

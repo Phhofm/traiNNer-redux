@@ -624,7 +624,7 @@ class RealESRGANModel(SRModel):
 
             # training pair pool
             self._dequeue_and_enqueue()
-            self.lq = self.lq.contiguous()  # for the warning: grad and param do not obey the gradient layout contract
+            self.lq = self.lq.to(memory_format=self.memory_format)
 
             i = 1
             if self.otf_debug:
