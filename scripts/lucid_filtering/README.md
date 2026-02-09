@@ -1,86 +1,241 @@
 # 💎 LUCID: Dataset Filtering for High-Fidelity SISR
 **L**earnable **U**nder-sampling **C**onsistency & **I**ntegrity **D**iscovery
 
-Developed by **Philip Hofmann**, LUCID is the professional successor to BHI and PSISRD, designed to discover mathematically perfect training pairs within multi-million image datasets (ImageNet, PASS, etc.).
+Developed by **Philip Hofmann**, LUCID filters multi-million image datasets (ImageNet, PASS) to extract the highest-quality training tiles for Super-Resolution.
 
 ---
 
-## 🧠 The Philosophy: Integrity over Aesthetics
-Traditional IQA (HyperIQA, BRISQUE) focuses on "beauty." LUCID focuses on **Signal Truth**.
+## 🎯 Goal: Beat the Baselines
+The objective is to produce a filtered dataset that achieves **higher PSNR/SSIM** on benchmarks like Urban100 than unfiltered datasets (e.g., Diverseg-ip).
 
-SISR is a reconstruction task. For a model to learn efficiently, the High-Res details must be logically consistent with the Low-Res version. If a source image has hidden JPEG noise, illegal sharpening, or was previously upscaled, the "link" between LR and HR is broken. Training on this data confuses the model.
+---
 
-### Stage 1: Signal Cleanliness (`lucid_stage1.py`)
-A high-speed CPU filter that removes technically flawed tiles before they touch the GPU.
-- **Entropy:** Removes flat or empty regions.
-- **Laplacian Variance:** Removes blur and illegal over-sharpening.
-- **Blockiness:** Detects and rejects JPEG/compression artifacts.
-- **Aliasing:** Detects moiré and sampling errors.
-- **Noise Ratio:** Filters out high sensor noise.
-- **NEW:** Every kept tile now logs these 6 metrics to `lucid_stage1_stats.csv` for deep dataset analysis.
+## 📋 Quick Start: Recommended Pipeline
 
-### Stage 2: Consistency Integrity (`lucid_stage2.py`)
-This is the "Mathematical Gate." It uses a lightweight **SR Probe** to test the integrity of each tile.
-1. **Downsample:** The tile is downsampled (Bicubic).
-2. **Reconstruct:** The SR Probe attempts to recover the original HR.
-3. **Verify:** If the PSNR is high, the tile is **Consistent**. The mapping is predictable and clean.
-4. **Reject:** If PSNR is low, the tile has a "Consistency Gap"—it contains information that doesn't follow the laws of your degradation model. These are "unreliable teachers" and are purged.
+```
+1. Stage 1         →  Remove blur, flat, artifacts (Technical Gate)
+2. Score Complexity →  ICNet scoring (outputs CSV)
+3. Score PSNR      →  Optional consistency check (outputs CSV)
+4. Manual Review   →  Choose thresholds based on statistics
+5. Copy Selection  →  Create final training dataset
+```
 
-### 4. Elite Dataset Pruning (Optional)
-Once you have your merged tile folder and Stage 2 logs, you can prune the dataset to keep only the mathematically "Elite" tiles (e.g., Top 10% or 25%). This is the secret for winning PSNR benchmarks like Urban100.
+> [!TIP]
+> **Zero-Lag Background Workflow:** All scripts automatically run at ultra-low priority (`os.nice(15)`). You can keep them running in the background while you continue your normal workflow without any desktop lag or SSH delays.
+
+---
+
+## 🔧 Scripts Reference
+
+### Stage 1: Technical Filtering (`lucid_stage1.py`)
+Removes technically defective images: blur, flat regions, JPEG artifacts.
 
 ```bash
-python lucid_prune.py \
-    --img_dir "/path/to/tiles" \
-    --out_dir "/path/to/elite_folder" \
-    --master_csv "/path/to/lucid_elite_master.csv" \
-    --s2_csv_paths "/path/to/stage2_psnr.csv" \
-    --s1_csv_paths "/path/to/stage1_stats.csv" \
+# Process images and delete originals automatically to save space
+python lucid_stage1.py \
+    --input /path/to/raw/images \
+    --output /path/to/stage1_output \
+    --tile_size 256 \
+    --delete_input
+```
+
+**Default Thresholds (recommended):**
+- `entropy_min: 5.5` — Rejects flat/empty regions
+- `lap_var_min: 100` — Rejects blur
+- `lap_var_max: 8000` — Allows sharp detail
+- `blockiness_max: 40` — Rejects JPEG artifacts
+
+---
+
+### Step 2: ICNet Complexity Scoring (`icnet_score_only.py`)
+Scores all tiles for information density. **Does not filter—outputs CSV only.**
+
+```bash
+python icnet_score_only.py \
+    --input /path/to/stage1_output \
+    --icnet ../../datasets/preparation/complexity/complexity.pth \
+    --csv complexity_scores.csv
+```
+
+**Output:** Complete CSV with all image paths and complexity scores, plus statistics:
+- Mean, median, max, min scores
+- Suggested thresholds for Top 10%, 20%, 25%, 30%, 50%
+- Score distribution histogram
+
+---
+
+### Step 3 (Optional): PSNR Consistency Scoring (`psnr_score_only.py`)
+Evaluates the "Stage 2" consistency metric. Use this to decide if rejecting low-PSNR tiles helps.
+
+```bash
+python psnr_score_only.py \
+    --input /path/to/stage1_output \
+    --csv psnr_scores.csv \
+    --scale 4
+```
+
+**Purpose:** Low-PSNR tiles are "hard"—they could be:
+- **Complex detail** (good for training) → KEEP
+- **Corrupted garbage** (bad for training) → REJECT
+
+Manually inspect the lowest-scoring tiles to decide your threshold.
+
+---
+
+### Step 4: Manual Threshold Selection
+After scoring, review the statistics printed by each script:
+
+```
+=== COMPLEXITY SCORE STATISTICS ===
+Top 25% (82101 images): score >= 0.4512
+Top 20% (65681 images): score >= 0.4789
+```
+
+Choose your cutoff based on:
+1. How many tiles you want
+2. Visual inspection of borderline tiles
+
+---
+
+### Step 5: Copy Selected Images (`copy_by_score.py`)
+Copies images that meet your threshold to a new folder.
+
+```bash
+# Copy top 25% by complexity
+python copy_by_score.py \
+    --csv complexity_scores.csv \
+    --output /path/to/elite_dataset \
+    --top_percent 25
+
+# OR: Copy by absolute score threshold
+python copy_by_score.py \
+    --csv complexity_scores.csv \
+    --output /path/to/elite_dataset \
+    --min_score 0.45
+
+# Preview without copying
+python copy_by_score.py \
+    --csv complexity_scores.csv \
+    --output /path/to/elite_dataset \
     --top_percent 25 \
-    --rename_index
+    --dry_run
 ```
 
-*   **Copying by default:** The script now performs a full physical copy of the images by default, making the output folder "distribution-ready" and portable.
-*   **Separate Metadata:** The `--master_csv` argument allows you to store the dataset statistics anywhere, keeping your image folder clean.
-*   **Index Renaming:** Use `--rename_index` to simplify filenames to `0.png`, `1.png`, etc., while maintaining the mapping in the Master CSV.
-
 ---
 
-#### 🔬 The SR Probe Architecture
-The included `SRProbeNet` is a minimalist, ultra-fast architecture spiritually and structurally similar to **ArtCNN**.
-- **Lightweight Design:** It uses a 5x5 head, a 3-layer 32-channel body, and a PixelShuffle tail.
-- **Why it works:** By using a "weak" but technically sound network, we create a **High Bar** for filtering. The probe will only reconstruct a tile perfectly if the LR-to-HR mapping is mathematically pure. This acts as a guarantee that your final High-Capacity model (like HAT or SwinIR) will receive 100% clean supervision.
-- **Speed:** Capable of processing thousands of tiles per second on modern GPUs, enabling ImageNet-scale filtering in hours.
+## 🔬 Analysis Tools
 
----
+### Dataset Gap Analysis (`analyze_dataset_gap.py`)
+Compares complexity distributions between two datasets (e.g., your Elite set vs Diverseg).
 
-## 🛡️ Production Stability (Scaling to Millions)
-LUCID is hardened specifically for large-scale production environments:
-- **Disk-Safe Streaming:** Uses `--batch_images` (default 10k) to process in chunks. Temporary tiles are **automatically deleted** between batches, bounding your peak disk usage.
-- **Batch Resumption:** Use `--start_batch X` to pick up exactly where you left off if a run is interrupted. Logs are automatically **appended**.
-- **RAM Safe:** Uses generator-based loading to keep RAM usage < 400MB even for ImageNet-scale inputs.
-- **Desktop Friendly:** Workers run with `os.nice(10)`, keeping your system responsive during 100% load.
-
----
-
-## 🚀 Usage Guide
-
-### 1. Train your "Mathematical Authority" (The Probe)
-Train the probe on a small, perfect dataset (e.g., DF2K or LSDIR).
 ```bash
-python lucid.py train --train "/path/to/DF2K_HR" --output sr_probe.pth
+python analyze_dataset_gap.py \
+    --diverseg /path/to/diverseg-ip \
+    --lucid /path/to/your_elite_dataset \
+    --icnet ../../datasets/preparation/complexity/complexity.pth
 ```
-
-### 2. Run the Full Production Pipeline
-The standard way to process millions of images safely.
-```bash
-# Processes in batches of 10k, with 256px tiles
-python lucid.py run-all --input "/raw/data" --output "/filtered" --weights sr_probe.pth --temp "/fast/ssd/temp"
-```
-
-### 3. Monitoring & Analytics
-- `lucid_stage1_stats.csv`: Detailed signal metrics for every tile that passed Stage 1.
-- `lucid_stage2_psnr.csv`: Reconstruction scores (x2, x4) for the final survivors.
 
 ---
+
+## 🛟 Resilient Recovery (Disk Space Management)
+Use these tools if you run out of disk space or need to resume an interrupted Stage 1.
+
+### 1. Verify Integrity (`verify_tiles.py`)
+Disk errors at 99% usage often create truncated (broken) images. This script purges them.
+```bash
+python scripts/lucid_filtering/verify_tiles.py \
+    --input /path/to/tiles \
+    --corrupted /path/to/corrupted_bin
+```
+
+### 2. Stream-Reclaim Space (`lucid_cleanup_source.py`)
+This script maps tiles back to ImageNet source files. It deletes the "covered" sources to free up space, then gives you a resume list for the rest.
+```bash
+# 1. Identify and delete processed ImageNet files
+python scripts/lucid_filtering/lucid_cleanup_source.py \
+    --input /path/to/imagenet \
+    --output /path/to/valid_tiles \
+    --delete
+
+# 2. Finish the remaining images
+python scripts/lucid_filtering/lucid_stage1.py \
+    /path/to/imagenet /path/to/tiles stats.csv \
+    --file_list resume_stage1.txt
+```
+
+---
+
+## 📊 Understanding the Metrics
+
+### Stage 1 Metrics (Technical Quality)
+| Metric | What It Detects | Good Values |
+|--------|-----------------|-------------|
+| Entropy | Information content | > 5.5 |
+| Laplacian Variance | Sharpness | 100 - 8000 |
+| Blockiness | JPEG artifacts | < 40 |
+| Aliasing Ratio | Moiré/sampling errors | < 0.6 |
+| Noise Ratio | Sensor noise | < 0.6 |
+
+### ICNet Complexity Score
+| Score Range | Interpretation |
+|-------------|----------------|
+| 0.0 - 0.2 | Very simple (gradients, sky) |
+| 0.2 - 0.4 | Low detail |
+| 0.4 - 0.5 | Moderate complexity |
+| 0.5 - 0.7 | High detail (textures, patterns) |
+| 0.7 - 1.0 | Very complex (Urban100-like) |
+
+### PSNR Consistency Score
+| PSNR | Interpretation |
+|------|----------------|
+| < 20 dB | Likely garbage or extreme artifacts |
+| 20-25 dB | "Hard" tiles—inspect manually |
+| 25-30 dB | Normal, clean tiles |
+| > 30 dB | "Easy" tiles—smooth, simple |
+
+---
+
+## 💡 Pipeline Philosophy
+
+### Why Skip Stage 2?
+Our analysis showed that Stage 2 (PSNR consistency) was killing complex tiles:
+- **Diverseg Mean Complexity:** 0.49 (Max: 0.91)
+- **LUCID Stage2 Elite:** 0.42 (Max: 0.63)
+
+Stage 2 kept "easy" tiles and rejected the "hard" detail we need for Urban100.
+
+### Recommended Strategy
+1. **Stage 1:** Keep defaults—removes only true garbage
+2. **ICNet Scoring:** Primary selector—prioritizes information density
+3. **PSNR Scoring:** Optional sanity check—reject only extreme outliers (< 18 dB)
+
+---
+
+## 🛡️ System Stability & Safety
+
+Every script in the LUCID toolkit is designed to be a "good neighbor" on your system, allowing for long-running background processing without performance impact.
+
+- **Background Friendly (Zero-Lag):** Scripts automatically run at `os.nice(15)` priority. This ensures they only use "leftover" CPU/GPU cycles, preventing system lag and keeping remote access (SSH/VS Code) perfectly responsive even during 100% load.
+- **Graceful Interruption:** All scripts support safe interruption via `Ctrl+C`. The process will stop current work, flush remaining results to disk, and shut down cleanly without data loss or cryptic tracebacks.
+- **Reliable Recovery:** Interrupted runs save their progress (partial CSVs or resume lists), allowing you to pick up exactly where you left off.
+
+---
+
+## 📁 File Structure
+
+```
+scripts/lucid_filtering/
+├── lucid_stage1.py          # Technical filtering
+├── icnet_score_only.py      # Complexity scoring (CSV output)
+├── psnr_score_only.py       # PSNR scoring (CSV output)
+├── copy_by_score.py         # Copy images by threshold
+├── analyze_dataset_gap.py   # Compare dataset distributions
+├── stage3_density_gate.py   # Legacy: combined scoring + copying
+├── lucid_stage2.py          # Legacy: consistency filtering
+├── lucid_prune.py           # Legacy: multi-metric pruning
+└── README.md                # This file
+```
+
+---
+
 *LUCID: Mathematical integrity for the next generation of SISR models.*

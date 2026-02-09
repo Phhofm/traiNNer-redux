@@ -21,6 +21,7 @@ This ensures the final dataset is:
 
 import argparse
 import csv
+import os
 import shutil
 import sys
 import time
@@ -29,7 +30,6 @@ from pathlib import Path
 import cv2
 import numpy as np
 import torch
-import torch.nn.functional as F
 from tqdm import tqdm
 
 # Import ICNet from the local directory structure
@@ -185,6 +185,9 @@ def compute_complexity(model, image_paths, csv_path=None):
                     batch_tensors = []
                     batch_names = []
 
+            except KeyboardInterrupt:
+                print("\n\n!! Interrupted by user. Saving progress and exiting...")
+                break
             except Exception as e:
                 print(f"Error processing {path}: {e}")
                 continue
@@ -196,6 +199,13 @@ def compute_complexity(model, image_paths, csv_path=None):
 
 
 def main() -> None:
+    # Lower process priority to keep system responsive
+    try:
+        os.nice(15)
+        print("System Responsiveness Mode: Priority lowered to 15.")
+    except Exception:
+        pass
+
     parser = argparse.ArgumentParser(description="LUCID Stage 3: The Density Gate")
     parser.add_argument("--input", required=True, help="Input folder (Stage 2 Output)")
     parser.add_argument(

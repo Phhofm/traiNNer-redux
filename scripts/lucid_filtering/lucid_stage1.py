@@ -204,7 +204,7 @@ def process_single_image(args_pack):
         pass
 
     # Unpack arguments for multiprocessing
-    img_path, in_dir, out_dir, tile_size, thresholds, scales = args_pack
+    img_path, in_dir, out_dir, tile_size, thresholds, scales, delete_input = args_pack
 
     local_stats = {
         "processed_tiles": 0,
@@ -299,6 +299,17 @@ def process_single_image(args_pack):
                 elif reason:
                     local_stats[reason] += 1
 
+    except Exception as e:
+        local_stats["skipped_corrupt"] += 1
+        return local_stats, csv_rows
+
+    # Streaming Cleanup: Delete source image after successful processing
+    if delete_input and img_path.exists():
+        try:
+            img_path.unlink()
+        except Exception as e:
+            print(f"\n!! Could not delete source {img_path}: {e}")
+
     return local_stats, csv_rows
 
 
@@ -306,6 +317,13 @@ def process_single_image(args_pack):
 
 
 def main() -> None:
+    # Lower process priority to keep system responsive
+    try:
+        os.nice(15)
+        print("System Responsiveness Mode: Priority lowered to 15.")
+    except Exception:
+        pass
+
     parser = argparse.ArgumentParser(description="LUCID High-Performance Signal Filter")
     parser.add_argument("input", help="Source dataset directory")
     parser.add_argument("output", help="Directory to save filtered tiles")
@@ -324,6 +342,11 @@ def main() -> None:
     )
     parser.add_argument(
         "--file_list", help="Optional path to a .txt file containing image paths"
+    )
+    parser.add_argument(
+        "--delete_input",
+        action="store_true",
+        help="Permanently delete source image after processing to save disk space",
     )
     args = parser.parse_args()
 
@@ -397,7 +420,7 @@ def main() -> None:
 
             # Arguments for workers
             tasks_gen = (
-                (p, in_dir, out_dir, args.tile_size, THRESHOLDS, SCALES) for p in images
+                (p, in_dir, out_dir, args.tile_size, THRESHOLDS, SCALES, args.delete_input) for p in images
             )
 
             # Submit initial batch of chunks
@@ -416,36 +439,41 @@ def main() -> None:
                 except StopIteration:
                     break
 
-            while futures:
-                # wait for any chunk to complete
-                for fut in as_completed(futures):
-                    chunk_size = futures.pop(fut)
-                    try:
-                        chunk_results = fut.result()
+            try:
+                while futures:
+                    # wait for any chunk to complete
+                    for fut in as_completed(futures):
+                        chunk_size = futures.pop(fut)
+                        try:
+                            chunk_results = fut.result()
 
-                        # Aggregate results from chunk
-                        for stats, rows in chunk_results:
-                            for k, v in stats.items():
-                                global_stats[k] += v
-                            for row in rows:
-                                writer.writerow(row)
-                                total_saved += 1
-                            total_processed += 1
+                            # Aggregate results from chunk
+                            for stats, rows in chunk_results:
+                                for k, v in stats.items():
+                                    global_stats[k] += v
+                                for row in rows:
+                                    writer.writerow(row)
+                                    total_saved += 1
+                                total_processed += 1
 
-                        pbar.update(chunk_size)
-                    except Exception as e:
-                        print(f"\n!! Error in worker chunk: {e}")
+                            pbar.update(chunk_size)
+                        except Exception as e:
+                            print(f"\n!! Error in worker chunk: {e}")
 
-                    # Submit a new chunk to replace the finished one
-                    try:
-                        next_chunk = next(chunk_generator)
-                        new_fut = executor.submit(process_chunk_worker, next_chunk)
-                        futures[new_fut] = len(next_chunk)
-                    except StopIteration:
-                        pass
+                        # Submit a new chunk to replace the finished one
+                        try:
+                            next_chunk = next(chunk_generator)
+                            new_fut = executor.submit(process_chunk_worker, next_chunk)
+                            futures[new_fut] = len(next_chunk)
+                        except StopIteration:
+                            pass
 
-                    # break to iterate the loop and update progress faster
-                    break
+                        # break to iterate the loop and update progress faster
+                        break
+            except KeyboardInterrupt:
+                print("\n\n!! Interrupted by user. Shutting down gracefully...")
+                executor.shutdown(wait=False, cancel_futures=True)
+                sys.exit(0)
 
             pbar.close()
 

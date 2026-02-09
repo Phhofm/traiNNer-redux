@@ -14,12 +14,12 @@ If Diverseg >> Elite, then our Stage 2 filter was too strict and killed the comp
 """
 
 import argparse
+import os
 import random
 import sys
 from pathlib import Path
 
 import cv2
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from tqdm import tqdm
@@ -110,14 +110,28 @@ def score_images(model, image_paths, is_tiled=False):
         if DEVICE == "cuda":
             tensor = tensor.half()
 
-        with torch.no_grad():
-            score, _ = model(tensor)
-            scores.append(float(score))
+        try:
+            with torch.no_grad():
+                score, _ = model(tensor)
+                scores.append(float(score))
+        except KeyboardInterrupt:
+            print("\n\n!! Interrupted by user. Returning current scores...")
+            break
+        except Exception as e:
+            print(f"Error scoring {path}: {e}")
+            continue
 
     return scores
 
 
 def main() -> None:
+    # Lower process priority to keep system responsive
+    try:
+        os.nice(15)
+        print("System Responsiveness Mode: Priority lowered to 15.")
+    except Exception:
+        pass
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--diverseg", required=True, help="Path to Diverseg-ip root")
     parser.add_argument("--lucid", required=True, help="Path to LUCID-IP-Complex root")
