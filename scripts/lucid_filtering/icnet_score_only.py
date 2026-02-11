@@ -15,9 +15,16 @@ import os
 import sys
 from pathlib import Path
 
+# Fix for "Python stopped working" notifications on Linux:
+# Limit background threads within workers to prevent resource deadlock
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+
 import cv2
 import numpy as np
 import torch
+import torch.multiprocessing as mp  # Use torch.multiprocessing for spawn safety
+import torch.nn.functional as F_torch
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
@@ -34,10 +41,18 @@ except ImportError:
 
 # ====================== CONFIG ======================
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-BATCH_SIZE = 128  # Increased for higher throughput
-NUM_WORKERS = max(
-    1, os.cpu_count() // 2
-)  # Conservative: leave half the threads for OS/Remote access
+BATCH_SIZE = 128  # Balanced for high throughput and stability
+NUM_WORKERS = 4  # Fewer, higher-priority workers to avoid I/O thrashing
+
+# Fixed Sharing Strategy for high-speed IPC
+if sys.platform != "win32":
+    try:
+        import torch.multiprocessing as mp
+
+        # Use file_descriptor for speed (default), increase ulimit manually if needed
+        mp.set_sharing_strategy("file_descriptor")
+    except Exception:
+        pass
 
 
 class ICNetDataset(Dataset):
@@ -55,16 +70,24 @@ class ICNetDataset(Dataset):
                 return None, str(path)
 
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            img = cv2.resize(img, (512, 512), interpolation=cv2.INTER_LINEAR)
+            # DO NOT RESIZE HERE. Keep native size (likely 256x256).
+            # Resizing on GPU is 100x faster and reduces CPU worker load.
 
-            img = img.astype(np.float32) / 255.0
-            img = (img - np.array([0.485, 0.456, 0.406])) / np.array(
-                [0.229, 0.224, 0.225]
-            )
-            img = np.transpose(img, (2, 0, 1))
+            # Return as uint8 (HWC) to save bandwidth
             return torch.from_numpy(img), str(path)
         except Exception:
             return None, str(path)
+
+
+def safe_collate(batch: list) -> tuple[torch.Tensor, list[str]] | None:
+    """Efficiently stacks tensors and filters fails in one pass."""
+    batch = [item for item in batch if item[0] is not None]
+    if not batch:
+        return None
+
+    tensors = torch.stack([item[0] for item in batch])
+    paths = [item[1] for item in batch]
+    return tensors, paths
 
 
 def load_icnet(model_path: Path) -> torch.nn.Module:
@@ -117,8 +140,10 @@ def score_images(
         batch_size=BATCH_SIZE,
         shuffle=False,
         num_workers=NUM_WORKERS,
-        pin_memory=(DEVICE == "cuda"),
-        collate_fn=lambda x: [y for y in x if y[0] is not None],  # Filter failed loads
+        pin_memory=False,  # Set to False to prevent potential hangs with 'spawn' and low priority
+        persistent_workers=(NUM_WORKERS > 0),
+        prefetch_factor=2,
+        collate_fn=safe_collate,  # Use top-level function for pickling safety
     )
 
     # Open CSV for appending
@@ -128,15 +153,32 @@ def score_images(
     if not file_exists:
         writer.writerow(["image_path", "complexity_score"])
 
+    # Prepare normalization constants on GPU
+    mean = torch.tensor([0.485, 0.456, 0.406], device=DEVICE).view(1, 3, 1, 1).half()
+    std = torch.tensor([0.229, 0.224, 0.225], device=DEVICE).view(1, 3, 1, 1).half()
+
     try:
-        for batch in tqdm(dataloader, desc="Scoring (Turbo)"):
-            if not batch:
+        for batch_data in tqdm(dataloader, desc="Scoring (Turbo)"):
+            if batch_data is None:
                 continue
 
-            tensors, paths = zip(*batch, strict=False)
-            batch_stack = torch.stack(tensors).to(DEVICE)
-            if DEVICE == "cuda":
-                batch_stack = batch_stack.half()
+            tensors, paths = batch_data
+            # Move to GPU immediately
+            batch_stack = tensors.to(DEVICE, non_blocking=True)
+
+            # Efficient GPU-side processing
+            # 1. NHWC -> NCHW & convert to half
+            batch_stack = batch_stack.permute(0, 3, 1, 2).half()
+
+            # 2. Resize to 512x512 on GPU
+            if batch_stack.shape[2] != 512 or batch_stack.shape[3] != 512:
+                batch_stack = F_torch.interpolate(
+                    batch_stack, size=(512, 512), mode="bilinear", align_corners=False
+                )
+
+            # 3. Normalize
+            batch_stack = batch_stack / 255.0
+            batch_stack = (batch_stack - mean) / std
 
             with torch.no_grad():
                 scores, _ = model(batch_stack)
@@ -155,9 +197,15 @@ def score_images(
             if len(results) % 1000 == 0:
                 f_handle.flush()
 
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, SystemExit):
         print("\n\n!! Interrupted by user. Saving progress and exiting...")
+        # Hard shutdown of dataloader to prevent messy multi-thread hangs
+        try:
+            del dataloader
+        except Exception:
+            pass
     finally:
+        f_handle.flush()
         f_handle.close()
 
     return results
@@ -199,8 +247,18 @@ def print_stats(results: dict[str, float]) -> None:
 def main() -> None:
     # Lower process priority immediately to keep system responsive (affects children too)
     try:
+        # Use 'spawn' instead of 'fork' to prevent library conflicts (cv2/OpenMP)
+        # that lead to "Python stopped working" notifications.
+        if mp.get_start_method(allow_none=True) is None:
+            mp.set_start_method("spawn", force=True)
+
+        if DEVICE == "cuda":
+            torch.backends.cudnn.benchmark = True
+
         os.nice(15)  # Even lower priority (0 is normal, 19 is lowest)
-        print("System Responsiveness Mode: Priority lowered to 15.")
+        print(
+            "System Responsiveness Mode: Priority lowered to 15. Start method: spawn."
+        )
     except Exception:
         pass
 
@@ -213,11 +271,14 @@ def main() -> None:
     in_dir = Path(args.input)
     csv_path = Path(args.csv)
 
-    print(f"Scanning {in_dir}...")
+    print(f"Scanning {in_dir} (Fast Scan)...")
     valid_exts = {".png", ".jpg", ".jpeg", ".webp"}
-    image_paths = sorted(
-        [p for p in in_dir.rglob("*") if p.suffix.lower() in valid_exts and p.is_file()]
-    )
+    # Efficient generator-based scan to handle millions of files without RAM bloat
+    image_paths = []
+    for root, _, files in os.walk(in_dir):
+        for f in files:
+            if any(f.lower().endswith(ext) for ext in valid_exts):
+                image_paths.append(Path(root) / f)
 
     if not image_paths:
         print("No images found!")

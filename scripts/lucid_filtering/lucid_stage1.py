@@ -216,6 +216,7 @@ def process_single_image(args_pack):
         "fail_grad_energy": 0,
         "fail_noise": 0,
         "skipped_corrupt": 0,
+        "deleted_inputs": 0,
     }
 
     csv_rows = []
@@ -224,47 +225,47 @@ def process_single_image(args_pack):
         # Load as RGB then convert to Gray once per scale
         pil_img = Image.open(img_path).convert("RGB")
         img_np = np.array(pil_img)
-    except Exception:
-        local_stats["skipped_corrupt"] += 1
-        return local_stats, csv_rows
 
-    h, w, _ = img_np.shape
-    if h < tile_size or w < tile_size:
-        return local_stats, csv_rows
+        h, w, _ = img_np.shape
+        if h < tile_size or w < tile_size:
+            return local_stats, csv_rows
 
-    # Unique naming
-    try:
-        rel_path = img_path.relative_to(in_dir)
-    except ValueError:
-        rel_path = img_path.name
+        # Unique naming
+        try:
+            rel_path = img_path.relative_to(in_dir)
+        except ValueError:
+            rel_path = img_path.name
 
-    name_base = str(Path(rel_path).with_suffix("")).replace("/", "_").replace("\\", "_")
+        name_base = (
+            str(Path(rel_path).with_suffix("")).replace("/", "_").replace("\\", "_")
+        )
 
-    for s, suf in scales:
-        if s != 1.0:
-            # INTER_AREA is best for downscaling
-            scaled_rgb = cv2.resize(
-                img_np, None, fx=s, fy=s, interpolation=cv2.INTER_AREA
-            )
-        else:
-            scaled_rgb = img_np
+        processed_successfully = False
+        for s, suf in scales:
+            if s != 1.0:
+                # INTER_AREA is best for downscaling
+                scaled_rgb = cv2.resize(
+                    img_np, None, fx=s, fy=s, interpolation=cv2.INTER_AREA
+                )
+            else:
+                scaled_rgb = img_np
 
-        sh, sw, _ = scaled_rgb.shape
-        if sh < tile_size or sw < tile_size:
-            continue
+            sh, sw, _ = scaled_rgb.shape
+            if sh < tile_size or sw < tile_size:
+                continue
 
-        # Convert to Grayscale ONCE for the entire scaled image
-        scaled_gray = cv2.cvtColor(scaled_rgb, cv2.COLOR_RGB2GRAY)
+            # Convert to Grayscale ONCE for the entire scaled image
+            scaled_gray = cv2.cvtColor(scaled_rgb, cv2.COLOR_RGB2GRAY)
 
-        for y in range(sh // tile_size):
-            for x in range(sw // tile_size):
-                y0, y1 = y * tile_size, (y + 1) * tile_size
-                x0, x1 = x * tile_size, (x + 1) * tile_size
+            for y in range(sh // tile_size):
+                for x in range(sw // tile_size):
+                    y0, y1 = y * tile_size, (y + 1) * tile_size
+                    x0, x1 = x * tile_size, (x + 1) * tile_size
 
-                gray_tile = scaled_gray[y0:y1, x0:x1]
+                    gray_tile = scaled_gray[y0:y1, x0:x1]
 
-                local_stats["processed_tiles"] += 1
-                passed, reason = process_tile(gray_tile, thresholds)
+                    local_stats["processed_tiles"] += 1
+                    passed, reason = process_tile(gray_tile, thresholds)
 
                 if passed:
                     # To provide "useful stats", we recalculate the metrics for the PASSED tiles
@@ -280,7 +281,11 @@ def process_single_image(args_pack):
                     rgb_tile = scaled_rgb[y0:y1, x0:x1]
                     bgr_tile = cv2.cvtColor(rgb_tile, cv2.COLOR_RGB2BGR)
                     fname = f"{name_base}_{suf}_{y}_{x}.png"
-                    cv2.imwrite(str(out_dir / fname), bgr_tile)
+                    success = cv2.imwrite(str(out_dir / fname), bgr_tile)
+                    if not success:
+                        raise OSError(
+                            f"Failed to write tile {fname}. Disk might be full."
+                        )
 
                     # Log rich stats: [fname, scale, entropy, lap, grad, block, alias, noise]
                     csv_rows.append(
@@ -299,14 +304,21 @@ def process_single_image(args_pack):
                 elif reason:
                     local_stats[reason] += 1
 
-    except Exception as e:
-        local_stats["skipped_corrupt"] += 1
-        return local_stats, csv_rows
+        # If we reach here, we successfully iterated through all scales/tiles.
+        # This is our signal that it is safe to delete.
+        processed_successfully = True
 
-    # Streaming Cleanup: Delete source image after successful processing
-    if delete_input and img_path.exists():
+    except Exception as e:
+        print(f"\n!! Error processing {img_path}: {e}")
+        local_stats["skipped_corrupt"] += 1
+        processed_successfully = False
+
+    # Streaming Cleanup: Delete source image ONLY if it was actually processed
+    # (either saved tiles, or rejected all tiles, but the loops must have run)
+    if delete_input and processed_successfully and img_path.exists():
         try:
             img_path.unlink()
+            local_stats["deleted_inputs"] += 1
         except Exception as e:
             print(f"\n!! Could not delete source {img_path}: {e}")
 
@@ -360,10 +372,14 @@ def main() -> None:
         with open(args.file_list) as f:
             images = [Path(line.strip()) for line in f if line.strip()]
     else:
-        print("Finding images...")
+        print(f"Scanning {in_dir} (Fast Scan)...")
         valid_extensions = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif"}
-        # Materialize once to get total count, but keep it efficient
-        images = [p for p in in_dir.rglob("*") if p.suffix.lower() in valid_extensions]
+        # Efficient generator-based scan for 1.4M+ files
+        images = []
+        for root, _, files in os.walk(in_dir):
+            for f in files:
+                if any(f.lower().endswith(ext) for ext in valid_extensions):
+                    images.append(Path(root) / f)
 
     num_imgs = len(images)
 
@@ -389,6 +405,7 @@ def main() -> None:
         "fail_grad_energy": 0,
         "fail_noise": 0,
         "skipped_corrupt": 0,
+        "deleted_inputs": 0,
     }
 
     start_time = time.time()
@@ -420,7 +437,16 @@ def main() -> None:
 
             # Arguments for workers
             tasks_gen = (
-                (p, in_dir, out_dir, args.tile_size, THRESHOLDS, SCALES, args.delete_input) for p in images
+                (
+                    p,
+                    in_dir,
+                    out_dir,
+                    args.tile_size,
+                    THRESHOLDS,
+                    SCALES,
+                    args.delete_input,
+                )
+                for p in images
             )
 
             # Submit initial batch of chunks
@@ -494,6 +520,10 @@ def main() -> None:
     print(f"  Aliasing:      {global_stats['fail_aliasing']:>10}")
     print(f"  Grad Energy:   {global_stats['fail_grad_energy']:>10}")
     print(f"  Noise Ratio:   {global_stats['fail_noise']:>10}")
+
+    if args.delete_input:
+        print("\nSource Removal:")
+        print(f"  Deleted Inputs: {global_stats['deleted_inputs']:>10}")
 
 
 if __name__ == "__main__":

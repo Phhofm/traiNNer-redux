@@ -1,200 +1,111 @@
+#!/usr/bin/env python3
+"""
+LUCID: Dataset Pruning Tool
+===========================
+Author: Philip Hofmann
+Description:
+Deletes low-scoring images from disk based on a complexity CSV.
+Use this to free up massive amounts of disk space by keeping only the "Elite" tiles.
+"""
+
 import argparse
 import csv
 import os
-import shutil
+import sys
 from pathlib import Path
 
 from tqdm import tqdm
 
 
-def prune() -> None:
-    parser = argparse.ArgumentParser(
-        description="Prune LUCID dataset based on PSNR percentiles."
-    )
-    parser.add_argument(
-        "--img_dir",
-        required=True,
-        help="Folder containing the processed tiles (source)",
-    )
-    parser.add_argument(
-        "--out_dir", required=True, help="Where to save the elite tiles (target)"
-    )
-    parser.add_argument(
-        "--s2_csv_paths",
-        nargs="+",
-        required=True,
-        help="Paths to stage2_psnr.csv files",
-    )
-    parser.add_argument(
-        "--s1_csv_paths",
-        nargs="*",
-        default=[],
-        help="Optional paths to lucid_stage1_stats.csv files for master metadata",
-    )
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Prune dataset by complexity score.")
+    parser.add_argument("--csv", required=True, help="Path to complexity_scores.csv")
     parser.add_argument(
         "--top_percent",
         type=float,
-        default=25.0,
-        help="Top percentage to keep (default: 25.0)",
-    )
-    parser.add_argument(
-        "--master_csv",
         required=True,
-        help="Path where the final master stats CSV should be saved",
+        help="Percent of top images to KEEP (e.g. 25)",
     )
     parser.add_argument(
-        "--symlink",
+        "--delete",
         action="store_true",
-        help="Use symlinks instead of copying (DANGEROUS: Tiles won't be portable)",
-    )
-    parser.add_argument(
-        "--rename_index",
-        action="store_true",
-        help="Rename tiles to 0.png, 1.png, etc. (mapped in CSV)",
+        help="Actually perform deletion (Omit for dry run)",
     )
     args = parser.parse_args()
 
-    img_dir = Path(args.img_dir).absolute()
-    out_dir = Path(args.out_dir).absolute()
-    out_dir.mkdir(parents=True, exist_ok=True)
-    master_csv_path = Path(args.master_csv).absolute()
-    master_csv_path.parent.mkdir(parents=True, exist_ok=True)
+    csv_path = Path(args.csv)
+    if not csv_path.exists():
+        print(f"Error: CSV not found at {csv_path}")
+        sys.exit(1)
 
-    # 1. Build a Stem Map of the physical tiles
-    print(f"Scanning {img_dir}...")
-    stem_map = {}
-    for f in img_dir.glob("*.png"):
-        name = f.name
-        stem = name[:-4]
-        if name not in stem_map:
-            stem_map[name] = []
-        stem_map[name].append(name)
-
-        parts = stem.split("_")
-        if len(parts) > 3:
-            orig_stem = "_".join(parts[:-3])
-            orig_name = orig_stem + ".png"
-            if orig_name not in stem_map:
-                stem_map[orig_name] = []
-            stem_map[orig_name].append(name)
-
-    # 2. Map Stage 1 Metrics (Optional)
-    s1_data = {}  # tile_name -> metrics_dict
-    if args.s1_csv_paths:
-        print("Collecting Stage 1 metrics...")
-        for csv_path in args.s1_csv_paths:
-            csv_path = Path(csv_path)
-            if not csv_path.exists():
-                continue
-            with open(csv_path, encoding="utf-8") as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    s1_data[row["tile"]] = row
-
-    # 3. Collect Stage 2 PSNR and build the elite pool
-    print("Collecting Stage 2 scores...")
-    tile_pool = []  # List of dicts
-    for csv_path in args.s2_csv_paths:
-        csv_path = Path(csv_path)
-        if not csv_path.exists():
-            continue
-
-        with open(csv_path, encoding="utf-8") as f:
-            reader = csv.DictReader(f)
+    # 1. Load scores
+    print(f"Loading scores from {csv_path}...")
+    items = []
+    try:
+        with open(csv_path) as f:
+            reader = csv.reader(f)
+            next(reader, None)  # Skip header
             for row in reader:
-                try:
-                    if (
-                        row.get("kept") == "False"
-                        or not row.get("psnr_x4")
-                        or row.get("psnr_x4") == "None"
-                    ):
-                        continue
+                if len(row) >= 2:
+                    items.append((row[0], float(row[1])))
+    except Exception as e:
+        print(f"Error reading CSV: {e}")
+        sys.exit(1)
 
-                    csv_tile = row["tile"]
-                    if csv_tile in stem_map:
-                        psnr = float(row["psnr_x4"])
-                        # One CSV entry might match multiple physical tiles
-                        for actual_name in stem_map[csv_tile]:
-                            entry = {
-                                "original_tile": actual_name,
-                                "source_image": csv_tile,
-                                "psnr_x4": psnr,
-                                "psnr_x2": row.get("psnr_x2", "N/A"),
-                            }
-                            # Merge stage 1 metrics if we have them
-                            # Try matching by actual name first, then by the source_image (stem)
-                            m = s1_data.get(actual_name) or s1_data.get(csv_tile)
-                            if m:
-                                entry.update(
-                                    {
-                                        "entropy": m.get("entropy"),
-                                        "lap_var": m.get("lap_var"),
-                                        "grad_energy": m.get("grad_energy"),
-                                        "blockiness": m.get("blockiness"),
-                                        "aliasing": m.get("aliasing"),
-                                        "noise_ratio": m.get("noise_ratio"),
-                                    }
-                                )
-                            tile_pool.append(entry)
-                except:
-                    continue
+    if not items:
+        print("No scores found in CSV.")
+        sys.exit(1)
 
-    if not tile_pool:
-        print("Error: No matching records found.")
+    # 2. Sort and calculate threshold
+    items.sort(key=lambda x: x[1], reverse=True)
+
+    keep_count = int(len(items) * (args.top_percent / 100.0))
+    elite_set = {path for path, score in items[:keep_count]}
+    to_delete = items[keep_count:]
+
+    if keep_count > 0:
+        cutoff = items[keep_count - 1][1]
+    else:
+        cutoff = 1.0
+
+    print("\n--- Pruning Strategy ---")
+    print(f"Total Images:    {len(items)}")
+    print(f"Strategy:        Keep Top {args.top_percent}%")
+    print(f"Keeping:         {keep_count} images (Score >= {cutoff:.4f})")
+    print(f"Deleting:        {len(to_delete)} images (Score < {cutoff:.4f})")
+
+    if not args.delete:
+        print("\n[DRY RUN] No files were deleted. Add --delete to perform pruning.")
         return
 
-    # 4. Sort and Slice
-    print("Sorting by PSNR...")
-    tile_pool.sort(key=lambda x: x["psnr_x4"], reverse=True)
-    keep_count = int(len(tile_pool) * (args.top_percent / 100.0))
-    elite_pool = tile_pool[:keep_count]
-    print(f"Selected Top {args.top_percent}%: {len(elite_pool)} tiles.")
+    # 3. Perform deletion
+    print(f"\nPerforming Pruning (Safety: KEEPing {len(elite_set)} files)...")
 
-    # 5. Execute Pruning and Renaming
-    with open(master_csv_path, "w", newline="", encoding="utf-8") as f:
-        # Determine CSV header
-        fieldnames = [
-            "new_filename",
-            "original_tile",
-            "psnr_x4",
-            "psnr_x2",
-            "entropy",
-            "lap_var",
-            "grad_energy",
-            "blockiness",
-            "aliasing",
-            "noise_ratio",
-        ]
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
+    deleted_count = 0
+    errors = 0
+    freed_bytes = 0
 
-        action_str = "Symlinking" if args.symlink else "Copying"
-        print(
-            f"{action_str} tiles to {out_dir} and writing Master CSV to {master_csv_path}..."
-        )
+    for path_str, _score in tqdm(to_delete, desc="Pruning"):
+        path = Path(path_str)
+        if path.exists():
+            try:
+                # Track size for stats
+                freed_bytes += path.stat().st_size
+                path.unlink()
+                deleted_count += 1
+            except Exception as e:
+                errors += 1
+                if errors < 10:
+                    print(f"Error deleting {path}: {e}")
 
-        for i, entry in enumerate(tqdm(elite_pool)):
-            new_name = f"{i}.png" if args.rename_index else entry["original_tile"]
-            entry["new_filename"] = new_name
+    print("\n--- Pruning Results ---")
+    print(f"Successfully deleted: {deleted_count} files")
+    print(f"Space freed:          {freed_bytes / (1024**3):.2f} GB")
+    if errors > 0:
+        print(f"Errors encountered:   {errors}")
 
-            src = img_dir / entry["original_tile"]
-            dst = out_dir / new_name
-
-            if args.symlink:
-                if dst.exists():
-                    dst.unlink()
-                os.symlink(src, dst)
-            elif not dst.exists():
-                shutil.copy2(src, dst)
-
-            # Filter dict to match header
-            csv_row = {k: entry.get(k, "") for k in fieldnames}
-            writer.writerow(csv_row)
-
-    print(f"\nSuccess! Elite dataset is ready at: {out_dir}")
-    print(f"Master metadata saved to: {master_csv_path}")
-    print(f"Minimum PSNR in this set: {elite_pool[-1]['psnr_x4']:.2f} dB")
+    print("\nPruning complete. Your disk has been reclaimed.")
 
 
 if __name__ == "__main__":
-    prune()
+    main()
