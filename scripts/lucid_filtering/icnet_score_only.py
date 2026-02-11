@@ -24,7 +24,6 @@ import cv2
 import numpy as np
 import torch
 import torch.multiprocessing as mp  # Use torch.multiprocessing for spawn safety
-import torch.nn.functional as F_torch
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
@@ -70,8 +69,10 @@ class ICNetDataset(Dataset):
                 return None, str(path)
 
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            # DO NOT RESIZE HERE. Keep native size (likely 256x256).
-            # Resizing on GPU is 100x faster and reduces CPU worker load.
+
+            # Resize early to 512x512 for batch stacking stability.
+            # This allows us to handle datasets with mixed resolutions (like diverseg-ip).
+            img = cv2.resize(img, (512, 512), interpolation=cv2.INTER_LINEAR)
 
             # Return as uint8 (HWC) to save bandwidth
             return torch.from_numpy(img), str(path)
@@ -166,15 +167,9 @@ def score_images(
             # Move to GPU immediately
             batch_stack = tensors.to(DEVICE, non_blocking=True)
 
-            # Efficient GPU-side processing
-            # 1. NHWC -> NCHW & convert to half
+            # 2. Resizing is now handled in the DataLoader for multi-res stability.
+            # We keep the permute and half cast for GPU performance.
             batch_stack = batch_stack.permute(0, 3, 1, 2).half()
-
-            # 2. Resize to 512x512 on GPU
-            if batch_stack.shape[2] != 512 or batch_stack.shape[3] != 512:
-                batch_stack = F_torch.interpolate(
-                    batch_stack, size=(512, 512), mode="bilinear", align_corners=False
-                )
 
             # 3. Normalize
             batch_stack = batch_stack / 255.0

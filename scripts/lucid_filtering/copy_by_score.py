@@ -69,6 +69,9 @@ def main() -> None:
         "--symlink", action="store_true", help="Create symlinks instead of copying"
     )
     parser.add_argument(
+        "--move", action="store_true", help="Move files instead of copying"
+    )
+    parser.add_argument(
         "--dry_run",
         action="store_true",
         help="Print what would be copied without actually copying",
@@ -147,6 +150,8 @@ def main() -> None:
                 if dst.exists():
                     dst.unlink()
                 dst.symlink_to(src.resolve())
+            elif args.move:
+                shutil.move(src, dst)
             else:
                 shutil.copy2(src, dst)
             copied += 1
