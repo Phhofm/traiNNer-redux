@@ -5,7 +5,36 @@ LUCID v2 is a consolidated, 3-step pipeline designed for massive-scale filtering
 
 ---
 
-## 📦 The "Big 3" Workflow
+## 🏁 The "Finish Line" Sequence (For Existing Tiles)
+If you have already run the filtering/scoring and have folders of tiles, follow this final cleanup sequence:
+
+### 1. Unified Audit (Integrity + Profiles)
+**Script:** `00_audit.py`
+Run this on your **Lucid Root** folder (the one containing LSDIR, DF2K, etc.). It will recursively fix "Palette Transparency" warnings and move any corrupted files to a separate folder.
+```bash
+python 00_audit.py --input "/media/phips/.../lucid" --fix
+```
+
+### 2. Global Deduplication
+**Script:** `02_dedupe.py`
+Run this on the same **Lucid Root**. It will find redundant textures *across all datasets* to ensure your 1M tiles are unique.
+```bash
+python 02_dedupe.py --input "/media/phips/.../lucid"
+```
+
+### 3. Master Finalization
+**Script:** `03_finalize.py`
+This consolidates everything into your final **MASTER_ELITE** folder with sequential re-indexing and traceability.
+```bash
+python 03_finalize.py \
+    --input "/media/phips/.../lucid" \
+    --output "/media/phips/.../MASTER_ELITE" \
+    --move
+```
+
+---
+
+## 📦 The "Big 3" Workflow (For New Raw Data)
 
 ### Step 01: Ingest (Filter + Score + Verify)
 **Script:** `01_ingest.py`
@@ -46,9 +75,12 @@ All scripts automatically run with **`os.nice(15)`**. This means you can keep tr
 
 ---
 
-## 📊 Standard Master Elite Thresholds
-- **Complexity:** 0.45 (512px)
-- **Diversity:** 0.96 (Cosine Similarity)
-- **Signal:** Standard mathematical purity (Noise, Blur, Aliasing)
+## 💡 Training Performance Tip
+**Never train directly from a physical HDD.**
+SISR dataloaders perform heavy random-access reads. A physical hard drive's seek time will bottleneck your GPU, leading to extremely low utilization and 5-10x slower training times.
+
+**Recommended:** Finalize your dataset on the HDD for storage, then copy the `MASTER_ELITE` folder to an **SSD (NVMe or SATA)** for the actual training phase.
+
+---
 
 *LUCID: Mathematical integrity and structural diversity for the next generation of SISR models.*

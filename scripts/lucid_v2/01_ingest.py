@@ -16,12 +16,10 @@ Safe: Uses os.nice(15) and handles Graceful Interrupts.
 import argparse
 import csv
 import os
-import shutil
 import sys
-import warnings
+import traceback
 from pathlib import Path
 from queue import Empty
-from typing import Any, Dict, List
 
 import cv2
 import numpy as np
@@ -130,9 +128,11 @@ def producer_worker(args_tuple: tuple) -> bool:
 
             # Standardize
             if pil_img.mode != "RGB":
-                pil_img = pil_img.convert("RGB")
+                rgb_pil = pil_img.convert("RGB")
+            else:
+                rgb_pil = pil_img
 
-            img_np = np.array(pil_img)
+            img_np = np.array(rgb_pil)
             h, w, _ = img_np.shape
             if h < tile_size or w < tile_size:
                 return False
@@ -146,20 +146,23 @@ def producer_worker(args_tuple: tuple) -> bool:
                     rgb_tile = img_np[y0:y1, x0:x1]
                     gray_tile = cv2.cvtColor(rgb_tile, cv2.COLOR_RGB2GRAY)
 
-                    # Tiered Filter
-                    if entropy(gray_tile) < thresholds["entropy_min"]:
+                    # Tiered Filter (Track results for CSV)
+                    e = entropy(gray_tile)
+                    lv = laplacian_variance(gray_tile)
+                    ge = gradient_energy(gray_tile)
+                    bl = blockiness(gray_tile)
+                    nr = noise_ratio(gray_tile)
+                    ar = aliasing_ratio(gray_tile)
+
+                    if e < thresholds["entropy_min"]:
                         continue
-                    if not (
-                        thresholds["lap_var_min"]
-                        < laplacian_variance(gray_tile)
-                        < thresholds["lap_var_max"]
-                    ):
+                    if not (thresholds["lap_var_min"] < lv < thresholds["lap_var_max"]):
                         continue
-                    if gradient_energy(gray_tile) < thresholds["grad_energy_min"]:
+                    if ge < thresholds["grad_energy_min"]:
                         continue
-                    if blockiness(gray_tile) > thresholds["blockiness_max"]:
+                    if bl > thresholds["blockiness_max"]:
                         continue
-                    if noise_ratio(gray_tile) > thresholds["noise_ratio_max"]:
+                    if nr > thresholds["noise_ratio_max"]:
                         continue
 
                     queue.put(
@@ -167,6 +170,7 @@ def producer_worker(args_tuple: tuple) -> bool:
                             "data": rgb_tile,
                             "name": f"{name_base}_t{y}_{x}.png",
                             "path": str(img_path),
+                            "metrics": [e, lv, ge, bl, nr, ar],
                         }
                     )
         return True
@@ -181,12 +185,13 @@ def consumer_worker(
     out_dir: Path,
     csv_path: Path,
     threshold: float,
+    tile_size: int,
     batch_size: int,
 ) -> None:
     try:
         os.nice(15)
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        model = ICNet(is_pretrain=False)
+        model = ICNet(is_pretrain=False, size1=tile_size, size2=tile_size // 2)
         model.load_state_dict(
             torch.load(model_path, map_location=device, weights_only=True)
         )
@@ -194,57 +199,96 @@ def consumer_worker(
         if device == "cuda":
             model.half()
 
-        with open(csv_path, "w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(["tile_name", "score", "source"])
+        # Only write headers if the file does not exist
+        file_exists = csv_path.exists()
 
-        mean = (
-            torch.tensor([0.485, 0.456, 0.406], device=device).view(1, 3, 1, 1).half()
-        )
-        std = torch.tensor([0.229, 0.224, 0.225], device=device).view(1, 3, 1, 1).half()
+        # Keep handle open to reduce metadata overhead on HDDs
+        with open(csv_path, "a", newline="") as csv_file:
+            writer = csv.writer(csv_file)
+            if not file_exists:
+                writer.writerow(
+                    [
+                        "tile_name",
+                        "complexity_score",
+                        "entropy",
+                        "lap_var",
+                        "grad_energy",
+                        "blockiness",
+                        "noise_ratio",
+                        "aliasing",
+                        "source",
+                    ]
+                )
 
-        buffer = []
-        finished = 0
-        total = 0
+            mean = (
+                torch.tensor([0.485, 0.456, 0.406], device=device)
+                .view(1, 3, 1, 1)
+                .half()
+            )
+            std = (
+                torch.tensor([0.229, 0.224, 0.225], device=device)
+                .view(1, 3, 1, 1)
+                .half()
+            )
 
-        while True:
-            try:
-                item = queue.get(timeout=2)
-                if item == "DONE":
-                    finished += 1
-                else:
-                    buffer.append(item)
-            except Empty:
-                if finished > 0:
-                    break
-                continue
+            buffer = []
+            finished = 0
+            total = 0
 
-            if len(buffer) >= batch_size or (finished > 0 and buffer):
-                batch_imgs = [torch.from_numpy(b["data"]) for b in buffer]
-                tensors = (
-                    torch.stack(batch_imgs).to(device).permute(0, 3, 1, 2).half()
-                    / 255.0
-                    - mean
-                ) / std
+            while True:
+                try:
+                    item = queue.get(timeout=2)
+                    if item == "DONE":
+                        finished += 1
+                    else:
+                        buffer.append(item)
+                except Empty:
+                    if finished > 0:
+                        break
+                    continue
 
-                with torch.no_grad():
-                    scores, _ = model(tensors)
-                    scores = scores.flatten().cpu().float().numpy().tolist()
+                if len(buffer) >= batch_size or (finished > 0 and buffer):
+                    batch_imgs = [torch.from_numpy(b["data"]) for b in buffer]
+                    tensors = (
+                        torch.stack(batch_imgs).to(device).permute(0, 3, 1, 2).half()
+                        / 255.0
+                        - mean
+                    ) / std
 
-                with open(csv_path, "a", newline="") as f:
-                    writer = csv.writer(f)
+                    with torch.no_grad():
+                        scores, _ = model(tensors)
+                        scores = scores.flatten().cpu().float().numpy().tolist()
+
                     for b, score in zip(buffer, scores, strict=False):
-                        writer.writerow([b["name"], f"{score:.6f}", b["path"]])
+                        m = b["metrics"]
+                        writer.writerow(
+                            [
+                                b["name"],
+                                f"{score:.6f}",
+                                f"{m[0]:.4f}",
+                                f"{m[1]:.2f}",
+                                f"{m[2]:.4f}",
+                                f"{m[3]:.4f}",
+                                f"{m[4]:.4f}",
+                                f"{m[5]:.4f}",
+                                b["path"],
+                            ]
+                        )
                         if score >= threshold:
                             cv2.imwrite(
                                 str(out_dir / b["name"]),
                                 cv2.cvtColor(b["data"], cv2.COLOR_RGB2BGR),
                             )
-                total += len(buffer)
-                buffer = []
+
+                    # Flush to disk sporadically
+                    csv_file.flush()
+                    total += len(buffer)
+                    buffer = []
+
         print(f"\nIngest Pass Complete. Processed {total} tiles.")
-    except Exception as e:
-        print(f"Consumer Error: {e}")
+    except Exception:
+        print("\nFATAL: Consumer Worker failed!")
+        traceback.print_exc()
 
 
 # ========================= MAIN =========================
@@ -261,6 +305,9 @@ def main() -> None:
     parser.add_argument("--tile_size", type=int, default=512, help="Tile size")
     parser.add_argument("--workers", type=int, default=os.cpu_count() - 2)
     parser.add_argument("--batch", type=int, default=32)
+    parser.add_argument(
+        "--resume", action="store_true", help="Skip images already in the score CSV"
+    )
 
     args = parser.parse_args()
     in_dir = Path(args.input)
@@ -278,8 +325,24 @@ def main() -> None:
     # Discovery
     valid_exts = {".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff"}
     images = [p for p in in_dir.rglob("*") if p.suffix.lower() in valid_exts]
+
+    if args.resume and csv_path.exists():
+        print(f"Resuming: Checking {csv_path.name} for processed images...")
+        processed_sources = set()
+        try:
+            with open(csv_path, newline="") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    processed_sources.add(row["source"])
+
+            original_count = len(images)
+            images = [p for p in images if str(p) not in processed_sources]
+            print(f"Skipped {original_count - len(images)} already processed images.")
+        except Exception as e:
+            print(f"Warning: Could not parse existing CSV for resume: {e}")
+
     if not images:
-        print("No images found.")
+        print("No new images found to process.")
         return
 
     print(f"--- LUCID v2 Ingest: {dataset_name} ---")
@@ -296,6 +359,7 @@ def main() -> None:
             target_out,
             csv_path,
             args.threshold,
+            args.tile_size,
             args.batch,
         ),
     )
