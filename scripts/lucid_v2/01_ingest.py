@@ -118,7 +118,7 @@ def noise_ratio(gray: np.ndarray) -> float:
 
 
 def producer_worker(args_tuple: tuple) -> bool:
-    img_path, tile_size, queue, thresholds = args_tuple
+    img_path, tile_size, queue, thresholds, multiscale, processed_tasks = args_tuple
     try:
         os.nice(15)
         # 1. Profile Audit & Standardize on the fly
@@ -132,47 +132,81 @@ def producer_worker(args_tuple: tuple) -> bool:
             else:
                 rgb_pil = pil_img
 
-            img_np = np.array(rgb_pil)
-            h, w, _ = img_np.shape
-            if h < tile_size or w < tile_size:
-                return False
+            full_img_np = np.array(rgb_pil)
+            h_orig, w_orig, _ = full_img_np.shape
+
+            scales = [1.0]
+            if multiscale:
+                # Add fractional scales
+                scales.extend([0.75, 0.5, 0.25])
+                # Add "shortest dimension to tile_size" scale
+                min_dim = min(h_orig, w_orig)
+                if min_dim > tile_size:
+                    scales.append(tile_size / min_dim)
+
+            # Remove duplicates and scales that make the image too small
+            scales = sorted({s for s in scales if s > 0}, reverse=True)
+            scales = [
+                s
+                for s in scales
+                if int(h_orig * s) >= tile_size and int(w_orig * s) >= tile_size
+            ]
 
             name_base = img_path.stem
 
-            for y in range(h // tile_size):
-                for x in range(w // tile_size):
-                    y0, y1 = y * tile_size, (y + 1) * tile_size
-                    x0, x1 = x * tile_size, (x + 1) * tile_size
-                    rgb_tile = img_np[y0:y1, x0:x1]
-                    gray_tile = cv2.cvtColor(rgb_tile, cv2.COLOR_RGB2GRAY)
+            for scale in scales:
+                s_label = f"s{int(scale * 100):03d}"
+                # Task Resumption Check
+                if (str(img_path), s_label) in processed_tasks:
+                    continue
 
-                    # Tiered Filter (Track results for CSV)
-                    e = entropy(gray_tile)
-                    lv = laplacian_variance(gray_tile)
-                    ge = gradient_energy(gray_tile)
-                    bl = blockiness(gray_tile)
-                    nr = noise_ratio(gray_tile)
-                    ar = aliasing_ratio(gray_tile)
-
-                    if e < thresholds["entropy_min"]:
-                        continue
-                    if not (thresholds["lap_var_min"] < lv < thresholds["lap_var_max"]):
-                        continue
-                    if ge < thresholds["grad_energy_min"]:
-                        continue
-                    if bl > thresholds["blockiness_max"]:
-                        continue
-                    if nr > thresholds["noise_ratio_max"]:
-                        continue
-
-                    queue.put(
-                        {
-                            "data": rgb_tile,
-                            "name": f"{name_base}_t{y}_{x}.png",
-                            "path": str(img_path),
-                            "metrics": [e, lv, ge, bl, nr, ar],
-                        }
+                if scale == 1.0:
+                    img_np = full_img_np
+                else:
+                    new_w = int(w_orig * scale)
+                    new_h = int(h_orig * scale)
+                    img_np = cv2.resize(
+                        full_img_np, (new_w, new_h), interpolation=cv2.INTER_CUBIC
                     )
+
+                h, w, _ = img_np.shape
+
+                for y in range(h // tile_size):
+                    for x in range(w // tile_size):
+                        y0, y1 = y * tile_size, (y + 1) * tile_size
+                        x0, x1 = x * tile_size, (x + 1) * tile_size
+                        rgb_tile = img_np[y0:y1, x0:x1]
+                        gray_tile = cv2.cvtColor(rgb_tile, cv2.COLOR_RGB2GRAY)
+
+                        # Tiered Filter (Track results for CSV)
+                        e = entropy(gray_tile)
+                        lv = laplacian_variance(gray_tile)
+                        ge = gradient_energy(gray_tile)
+                        bl = blockiness(gray_tile)
+                        nr = noise_ratio(gray_tile)
+                        ar = aliasing_ratio(gray_tile)
+
+                        if e < thresholds["entropy_min"]:
+                            continue
+                        if not (
+                            thresholds["lap_var_min"] < lv < thresholds["lap_var_max"]
+                        ):
+                            continue
+                        if ge < thresholds["grad_energy_min"]:
+                            continue
+                        if bl > thresholds["blockiness_max"]:
+                            continue
+                        if nr > thresholds["noise_ratio_max"]:
+                            continue
+
+                        queue.put(
+                            {
+                                "data": rgb_tile,
+                                "name": f"{name_base}_{s_label}_t{y}_{x}.png",
+                                "path": str(img_path),
+                                "metrics": [e, lv, ge, bl, nr, ar],
+                            }
+                        )
         return True
     except Exception as e:
         print(f"Error Ingesting {img_path}: {e}")
@@ -308,6 +342,9 @@ def main() -> None:
     parser.add_argument(
         "--resume", action="store_true", help="Skip images already in the score CSV"
     )
+    parser.add_argument(
+        "--multiscale", action="store_true", help="Enable multi-scale tiling"
+    )
 
     args = parser.parse_args()
     in_dir = Path(args.input)
@@ -327,22 +364,37 @@ def main() -> None:
     images = [p for p in in_dir.rglob("*") if p.suffix.lower() in valid_exts]
 
     if args.resume and csv_path.exists():
-        print(f"Resuming: Checking {csv_path.name} for processed images...")
-        processed_sources = set()
+        print(f"Resuming: Checking {csv_path.name} for processed tasks...")
+        processed_tasks = set()  # (source_path, scale_label)
         try:
             with open(csv_path, newline="") as f:
                 reader = csv.DictReader(f)
                 for row in reader:
-                    processed_sources.add(row["source"])
+                    # Extract scale from tile_name: name_sXXX_tY_X.png
+                    # or handle legacy names without scale
+                    name = row["tile_name"]
+                    scale_label = "s100"
+                    if "_s" in name and "_t" in name:
+                        parts = name.split("_")
+                        for p in parts:
+                            if p.startswith("s") and p[1:].isdigit():
+                                scale_label = p
+                                break
+                    processed_tasks.add((row["source"], scale_label))
 
-            original_count = len(images)
-            images = [p for p in images if str(p) not in processed_sources]
-            print(f"Skipped {original_count - len(images)} already processed images.")
+            # We filter images later in the producer, but we can't easily skip images here
+            # if they have SOME missing scales. We'll pass the processed_tasks to the producer.
+            print(
+                f"Loaded {len(processed_tasks)} already completed (image+scale) tasks."
+            )
         except Exception as e:
             print(f"Warning: Could not parse existing CSV for resume: {e}")
+            processed_tasks = set()
+    else:
+        processed_tasks = set()
 
     if not images:
-        print("No new images found to process.")
+        print("No images found.")
         return
 
     print(f"--- LUCID v2 Ingest: {dataset_name} ---")
@@ -367,7 +419,17 @@ def main() -> None:
 
     try:
         with ctx.Pool(processes=args.workers) as pool:
-            task_args = [(p, args.tile_size, results_queue, THRESHOLDS) for p in images]
+            task_args = [
+                (
+                    p,
+                    args.tile_size,
+                    results_queue,
+                    THRESHOLDS,
+                    args.multiscale,
+                    processed_tasks,
+                )
+                for p in images
+            ]
             for _ in tqdm(
                 pool.imap_unordered(producer_worker, task_args),
                 total=len(images),

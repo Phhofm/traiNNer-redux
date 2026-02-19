@@ -58,7 +58,8 @@ for INPUT in "${INPUT_DIRS[@]}"; do
             --tile_size "$TILE_SIZE" \
             --workers "$WORKERS" \
             --batch 64 \
-            --resume
+            --resume \
+            --multiscale
         echo "Finished: $INPUT"
         echo "------------------------------------------------"
     else
