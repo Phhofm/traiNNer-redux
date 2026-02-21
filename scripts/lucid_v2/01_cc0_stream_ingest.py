@@ -33,6 +33,10 @@ from tqdm import tqdm
 Image.MAX_IMAGE_PIXELS = None
 ImageFile.LOAD_TRUNCATED_IMAGES = False
 
+# Increase Hugging Face Hub timeouts for massive datasets
+os.environ["HF_HUB_READ_TIMEOUT"] = "120"
+os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "120"
+
 try:
     if mp.get_start_method() != "spawn":
         mp.set_start_method("spawn", force=True)
@@ -285,7 +289,6 @@ def consumer_worker(
             )
 
             buffer = []
-            done_signals_required = 0  # Handled by raw_queue logic
             finished = False
             total_saved = 0
 
@@ -376,8 +379,6 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=max(1, os.cpu_count() - 4))
 
     args = parser.parse_args()
-    from datasets import load_dataset
-
     dataset_name = args.dataset.split("/")[-1]
     out_root = Path(args.output)
     target_out = out_root / dataset_name / "tiles"
@@ -396,7 +397,30 @@ def main() -> None:
         except:
             pass
 
-    ds = load_dataset(args.dataset, split=args.split, streaming=True)
+    # Load Stream with Retries
+    from datasets import load_dataset
+
+    print(f"--- LUCID v2 CC0 Ingest: {args.dataset} ---")
+    print(
+        "Connecting to Hugging Face Hub (this may take 1-2 mins for large datasets)..."
+    )
+
+    ds = None
+    for attempt in range(5):
+        try:
+            ds = load_dataset(args.dataset, split=args.split, streaming=True)
+            break
+        except Exception as e:
+            if attempt < 4:
+                print(
+                    f"Connection Attempt {attempt + 1} failed: {e}. Retrying in 5s..."
+                )
+                import time
+
+                time.sleep(5)
+            else:
+                print(f"FATAL: Could not connect to {args.dataset} after 5 attempts.")
+                raise e
 
     ctx = mp.get_context("spawn")
     raw_queue = ctx.Queue(maxsize=100)  # Buffer 100 raw images
