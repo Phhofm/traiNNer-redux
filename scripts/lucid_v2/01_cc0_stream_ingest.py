@@ -350,13 +350,13 @@ def consumer_worker(
 # ========================= MAIN =========================
 
 
-def fetcher_thread(ds, raw_queue, last_idx, pbar_ref) -> None:
+def fetcher_thread(ds, raw_queue, start_count, pbar_ref) -> None:
     """Fetcher: Streams from HF and fills the raw queue."""
     try:
         for i, item in enumerate(ds):
-            if i <= last_idx:
-                continue
-            raw_queue.put((i, item))
+            # i starts from 0 because ds is already skipped in main
+            actual_idx = start_count + i
+            raw_queue.put((actual_idx, item))
             pbar_ref[0].update(1)
         # End of stream signals
         for _ in range(mp.cpu_count()):
@@ -422,6 +422,14 @@ def main() -> None:
                 print(f"FATAL: Could not connect to {args.dataset} after 5 attempts.")
                 raise e
 
+    # Fast Resumption using .skip()
+    if last_idx >= 0:
+        print(f"Fast-skipping {last_idx + 1} already processed items...")
+        ds = ds.skip(last_idx + 1)
+        start_count = last_idx + 1
+    else:
+        start_count = 0
+
     ctx = mp.get_context("spawn")
     raw_queue = ctx.Queue(maxsize=100)  # Buffer 100 raw images
     tile_queue = ctx.Queue(maxsize=1000)  # Buffer 1000 tiles
@@ -452,9 +460,9 @@ def main() -> None:
         ingestors.append(p)
 
     # 3. Start Fetcher (Threaded in main process to keep HF iterator shared)
-    pbar = [tqdm(desc="Turbo-Streaming")]
+    pbar = [tqdm(desc="Turbo-Streaming", initial=start_count)]
     fetcher = threading.Thread(
-        target=fetcher_thread, args=(ds, raw_queue, last_idx, pbar)
+        target=fetcher_thread, args=(ds, raw_queue, start_count, pbar)
     )
     fetcher.start()
 
