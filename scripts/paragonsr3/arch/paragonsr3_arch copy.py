@@ -228,7 +228,7 @@ class GatedRepConv(nn.Module):
 
 
 class WindowAttention(nn.Module):
-    """Standard SDPA Window Attention with Depthwise Halo Exchange."""
+    """Standard SDPA Window Attention."""
 
     def __init__(
         self, dim: int, num_heads: int, window_size: int = 16, shift_size: int = 0
@@ -238,18 +238,10 @@ class WindowAttention(nn.Module):
         self.window_size = window_size
         self.shift_size = shift_size
         self.num_heads = num_heads
-
-        # Halo Exchange (Depthwise Conv) to bleed info across window boundaries
-        self.halo_exchange = nn.Conv2d(dim, dim, kernel_size=3, padding=1, groups=dim)
-
         self.qkv = nn.Linear(dim, dim * 3)
         self.proj = nn.Linear(dim, dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Halo Exchange: 3x3 Depthwise Conv before attention
-        x_conv = x.permute(0, 3, 1, 2)
-        x = x + self.halo_exchange(x_conv).permute(0, 2, 3, 1)
-
         B, H, W, C = x.shape
         ws = self.window_size
         pad_h = (ws - H % ws) % ws
@@ -294,32 +286,21 @@ class WindowAttention(nn.Module):
 
 
 class TokenDictionaryCA(nn.Module):
-    """Global Context Beacon with Dynamic Tokens (IET-inspired)."""
+    """Global Context Beacon."""
 
     def __init__(self, dim: int, num_tokens: int = 64) -> None:
         super().__init__()
-        self.num_tokens = num_tokens
+        self.token_dict = nn.Parameter(torch.randn(1, num_tokens, dim) * 0.02)
         self.q_proj = nn.Linear(dim, 32)  # Compressed QK for speed
         self.k_proj = nn.Linear(dim, 32)
         self.v_proj = nn.Linear(dim, dim)
         self.out_proj = nn.Linear(dim, dim)
         self.scale = 32**-0.5
 
-        # Generator for dynamic, image-specific tokens
-        self.token_generator = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Conv2d(dim, dim, 1),
-            nn.GELU(),
-            nn.Conv2d(dim, dim * num_tokens, 1),
-        )
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, C, H, W = x.shape
         x_flat = x.flatten(2).transpose(1, 2)  # (B, N, C)
-
-        # Generate dynamic tokens based on the global image context
-        # Output shape: (B, num_tokens, C)
-        td = self.token_generator(x).view(B, self.num_tokens, C)
+        td = self.token_dict.expand(B, -1, -1)
 
         q = self.q_proj(x_flat)
         k = self.k_proj(td)
@@ -433,7 +414,7 @@ class ParagonUpsampler(nn.Module):
             # 1x = Denoising/Refinement only
             self.net = nn.Sequential(
                 nn.Conv2d(in_channels, in_channels, 3, 1, 1),
-                nn.SiLU(),
+                nn.GELU(),
                 nn.Conv2d(in_channels, out_channels, 3, 1, 1),
             )
         elif scale in (2, 4):

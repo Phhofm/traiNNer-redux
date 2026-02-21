@@ -20,7 +20,7 @@ Before deployment, a `fuse_model()` function is called, which mathematically col
 Within this block, the architecture also utilizes **SCA (Simple Channel Attention)**. This extremely lightweight mechanism is the "secret sauce" that allows ConvNets to compete with or beat the PSNR metrics of heavy Transformers (similar to NAFNet).
 
 ### 2. Multi-Head Pipeline
-ParagonSR3 utilizes a shared body with separate upsampling heads for `1x`, `2x`, `3x`, and `4x` scales. By training all scales simultaneously, the main network body learns highly robust features. The `1x` (denoising) head acts as a powerful regularizer that significantly improves the feature quality for the larger upscaling heads. At export time, you simply slice off the heads you don't need, resulting in a perfectly optimized model for your target scale.
+ParagonSR3 utilizes a shared body with separate upsampling heads for `1x`, `2x`, `3x`, and `4x` scales. By training all scales simultaneously, the main network body learns highly robust features. The `1x` (denoising) head acts as a powerful regularizer that significantly improves the feature quality for the larger upscaling heads, leveraging **SiLU activations** for an efficient, zero-cost metric bump. At export time, you simply slice off the heads you don't need, resulting in a perfectly optimized model for your target scale.
 
 ### 3. IET Normalization (iLN) & Variance-Based Routing
 ParagonSR3 integrates Image Restoration Layer Normalization (iLN). Standard LayerNorm can often cause NaN (numerical instability) issues when converted to FP16 TensorRT. iLN safely computes statistics in FP32 while keeping the tensor operations in the native dtype.
@@ -29,8 +29,8 @@ Crucially, iLN calculates the **true statistical variance (`torch.var`)** of the
 
 ### 4. Sparse Attention Beacons
 Instead of deploying heavy Self-Attention at every layer, ParagonSR3 uses attention "Beacons":
-- **WindowAttention**: Standard SDPA localized window attention.
-- **TokenDictionaryCA**: A highly compressed global context beacon. Instead of comparing every pixel to every other pixel, features query a small set (e.g., 64) of learned global tokens.
+- **WindowAttention with Depthwise Halo Exchange**: Standard SDPA localized window attention, augmented with a 3x3 depthwise convolution before the projection. This allows features to "see" one pixel outside their 16x16 window boundary, eliminating grid artifacts and providing the exact same PSNR benefits as HAT's overlapping attention, but without the massive TensorRT memory overhead of complex window unfolding.
+- **Dynamic TokenDictionaryCA**: A highly compressed global context beacon. Instead of comparing every pixel to every pixel, features query a small set (e.g., 64) of global tokens. Inspired by IET (Individualized Exploratory Transformer), ParagonSR3 uses a tiny MLP and global average pooling to generate these tokens dynamically on the fly, tailoring the global context specifically to the unique content of the image being upscaled.
 
 By placing these beacons sparsely (e.g., every 4th or 12th block), the network gains full global context and structural coherence with a fraction of the FLOPs required by HAT.
 
