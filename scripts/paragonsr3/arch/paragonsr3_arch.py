@@ -299,11 +299,12 @@ class TokenDictionaryCA(nn.Module):
     def __init__(self, dim: int, num_tokens: int = 64) -> None:
         super().__init__()
         self.num_tokens = num_tokens
-        self.q_proj = nn.Linear(dim, 32)  # Compressed QK for speed
-        self.k_proj = nn.Linear(dim, 32)
+        qk_dim = dim // 2  # Compressed QK for speed
+        self.q_proj = nn.Linear(dim, qk_dim)
+        self.k_proj = nn.Linear(dim, qk_dim)
         self.v_proj = nn.Linear(dim, dim)
         self.out_proj = nn.Linear(dim, dim)
-        self.scale = 32**-0.5
+        self.scale = qk_dim**-0.5
 
         # Generator for dynamic, image-specific tokens
         self.token_generator = nn.Sequential(
