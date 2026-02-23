@@ -19,8 +19,10 @@ Before deployment, a `fuse_model()` function is called, which mathematically col
 
 Within this block, the architecture also utilizes **SCA (Simple Channel Attention)**. This extremely lightweight mechanism is the "secret sauce" that allows ConvNets to compete with or beat the PSNR metrics of heavy Transformers (similar to NAFNet).
 
-### 2. Multi-Head Pipeline
-ParagonSR3 utilizes a shared body with separate upsampling heads for `1x`, `2x`, `3x`, and `4x` scales. By training all scales simultaneously, the main network body learns highly robust features. The `1x` (denoising) head acts as a powerful regularizer that significantly improves the feature quality for the larger upscaling heads, leveraging **SiLU activations** for an efficient, zero-cost metric bump. At export time, you simply slice off the heads you don't need, resulting in a perfectly optimized model for your target scale.
+### 2. Multi-Head Pipeline & Hierarchical Feature Fusion
+ParagonSR3 utilizes a shared body with separate upsampling heads for `1x`, `2x`, `3x`, and `4x` scales. By training all scales simultaneously, the main network body learns highly robust features. The `1x` (denoising) head acts as a powerful regularizer that significantly improves the feature quality for the larger upscaling heads, leveraging **SiLU activations** for an efficient, zero-cost metric bump.
+
+Before the final upsampling head, ParagonSR3 employs **Cross-Scale Feature Fusion (Hierarchical Tapping)**. It taps the intermediate output features from every residual group, concatenating the high-frequency shallow features with the global-context-aware deep features. This hierarchical fusion is the architectural key to maximizing PSNR/SSIM on geometric datasets like Urban100, providing the upsampler with a perfectly balanced feature hierarchy. At export time, you simply slice off the heads you don't need, resulting in a perfectly optimized model for your target scale.
 
 ### 3. IET Normalization (iLN) & Variance-Based Routing
 ParagonSR3 integrates Image Restoration Layer Normalization (iLN). Standard LayerNorm can often cause NaN (numerical instability) issues when converted to FP16 TensorRT. iLN safely computes statistics in FP32 while keeping the tensor operations in the native dtype.

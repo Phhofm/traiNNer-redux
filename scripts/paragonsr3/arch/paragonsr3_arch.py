@@ -514,7 +514,8 @@ class ParagonSR3(nn.Module):
             self.conv_in = nn.Conv2d(in_chans, num_feat, 3, padding=1)
 
         # Body (Shared across all scales)
-        groups = []
+        # We store groups in a ModuleList instead of Sequential so we can tap intermediate features
+        self.body = nn.ModuleList()
         for g in range(num_groups):
             blocks = []
             for b in range(num_blocks):
@@ -550,11 +551,13 @@ class ParagonSR3(nn.Module):
                         shift_size=shift,
                     )
                 )
-            groups.append(ResidualGroup(blocks))
+            self.body.append(ResidualGroup(blocks))
 
-        self.body = nn.Sequential(*groups)
+        # Hierarchical Feature Fusion: Aggregate tapped group outputs
+        # We concatenate features from the input conv + every group, then compress
+        self.fusion_conv = nn.Conv2d(num_feat * (num_groups + 1), num_feat, 1)
 
-        # Pre-upsample processing
+        # Pre-upsample processing (Refines the fused features)
         self.conv_mid = nn.Conv2d(num_feat, num_feat, 3, padding=1)
         self.final_norm = AffineTransform(num_feat)
 
@@ -622,8 +625,16 @@ class ParagonSR3(nn.Module):
         else:
             x = self.conv_in(x)
 
-        # 3. Body (The expensive shared part)
-        x = self.body(x)
+        # 3. Body (The expensive shared part) with Hierarchical Feature Tapping
+        features_to_fuse = [x]  # Start with the early extracted features
+
+        for group in self.body:
+            x = group(x)
+            features_to_fuse.append(x)
+
+        # Cross-Scale Feature Fusion: Concat all tapped hierarchies (high/mid/low freq)
+        x = torch.cat(features_to_fuse, dim=1)
+        x = self.fusion_conv(x)
 
         # 4. Tap Output Features for Next Frame (Video)
         current_feat = x
