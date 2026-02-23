@@ -14,7 +14,6 @@ Restores speed by parallelizing the network/CPU bottleneck.
 
 import argparse
 import csv
-import gc
 import os
 import sys
 import threading
@@ -228,6 +227,8 @@ def ingest_worker(
                 # Cleanup
                 del img_data
                 del full_img_np
+                # Regular gc is handled automatically by Python
+                # but we can trigger it in main if needed.
 
             except Empty:
                 continue
@@ -350,19 +351,25 @@ def consumer_worker(
 # ========================= MAIN =========================
 
 
-def fetcher_thread(ds, raw_queue, start_count, pbar_ref) -> None:
-    """Fetcher: Streams from HF and fills the raw queue."""
+def fetcher_thread(
+    ds_shard, raw_queue, shard_skip, num_shards, shard_idx, pbar_ref
+) -> None:
+    """Fetcher: Streams from HF (specific shard) and fills the raw queue."""
     try:
-        for i, item in enumerate(ds):
-            # i starts from 0 because ds is already skipped in main
-            actual_idx = start_count + i
+        print(f"Fetcher Thread {shard_idx}: Starting (skipping {shard_skip} items)...")
+        # Apply skip at shard level (much faster than global skip)
+        if shard_skip > 0:
+            ds_shard = ds_shard.skip(shard_skip)
+
+        for i, item in enumerate(ds_shard):
+            # Calculate global index: (items_in_shard * num_shards) + shard_idx
+            actual_idx = ((shard_skip + i) * num_shards) + shard_idx
             raw_queue.put((actual_idx, item))
             pbar_ref[0].update(1)
-        # End of stream signals
-        for _ in range(mp.cpu_count()):
-            raw_queue.put("DONE")
+
+        print(f"Fetcher Thread {shard_idx}: Finished.")
     except Exception as e:
-        print(f"Fetcher Thread Error: {e}")
+        print(f"Fetcher Thread {shard_idx} Error: {e}")
 
 
 def main() -> None:
@@ -422,13 +429,9 @@ def main() -> None:
                 print(f"FATAL: Could not connect to {args.dataset} after 5 attempts.")
                 raise e
 
-    # Fast Resumption using .skip()
-    if last_idx >= 0:
-        print(f"Fast-skipping {last_idx + 1} already processed items...")
-        ds = ds.skip(last_idx + 1)
-        start_count = last_idx + 1
-    else:
-        start_count = 0
+    # Resumption Parameters
+    items_processed = last_idx + 1
+    start_count = items_processed
 
     ctx = mp.get_context("spawn")
     raw_queue = ctx.Queue(maxsize=100)  # Buffer 100 raw images
@@ -459,15 +462,33 @@ def main() -> None:
         p.start()
         ingestors.append(p)
 
-    # 3. Start Fetcher (Threaded in main process to keep HF iterator shared)
+    # 3. Start Multi-Shard Fetchers (Parallel Network Threads)
+    num_fetchers = 4  # 4 threads is usually enough to saturate bandwidth
     pbar = [tqdm(desc="Turbo-Streaming", initial=start_count)]
-    fetcher = threading.Thread(
-        target=fetcher_thread, args=(ds, raw_queue, start_count, pbar)
-    )
-    fetcher.start()
+    fetcher_threads = []
+
+    for f_idx in range(num_fetchers):
+        # Calculate shard-specific skip
+        shard_skip = items_processed // num_fetchers
+        if f_idx < items_processed % num_fetchers:
+            shard_skip += 1
+
+        ds_shard = ds.shard(num_shards=num_fetchers, index=f_idx)
+        t = threading.Thread(
+            target=fetcher_thread,
+            args=(ds_shard, raw_queue, shard_skip, num_fetchers, f_idx, pbar),
+        )
+        t.start()
+        fetcher_threads.append(t)
 
     try:
-        fetcher.join()
+        for t in fetcher_threads:
+            t.join()
+
+        # End of stream signals
+        for _ in range(args.workers + 4):  # 4 is num_fetchers
+            raw_queue.put("DONE")
+
         for p in ingestors:
             p.join()
         tile_queue.put("DONE")
