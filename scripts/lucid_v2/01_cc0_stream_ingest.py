@@ -153,6 +153,12 @@ def ingest_worker(
                     else:
                         continue
 
+                # Option A: Pixel Limit (Skip massive "Decompression Bombs")
+                w_pil, h_pil = img_data.size
+                if w_pil > 4096 or h_pil > 4096:
+                    # Skip massive images that choke the CPU
+                    continue
+
                 if img_data.mode != "RGB":
                     img_data = img_data.convert("RGB")
 
