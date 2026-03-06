@@ -7,6 +7,7 @@ Ensures the dataset maximizes information density by removing redundant textures
 Uses: ResNet18 feature fingerprints + Cosine Similarity.
 Optimized: Batch-wise comparison with sliding window pool for speed and stability.
 Safe: Uses os.nice(15) and small sleeps to keep the system responsive.
+Optimization: Direct resize to 224px (no crop) for faster preprocessing.
 """
 
 import argparse
@@ -104,8 +105,7 @@ def main() -> None:
 
     preprocess = transforms.Compose(
         [
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
+            transforms.Resize(224),  # Direct resize, no crop
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ]
