@@ -211,7 +211,10 @@ def extract_features_streaming(
     del mmap
 
     print(f"[+] Extracted {current_offset} features")
-    return np.load(features_path, mmap_mode="r")
+    # Return as memmap for FAISS processing
+    return np.memmap(
+        features_path, dtype=np.float16, mode="r", shape=(current_offset, 512)
+    )
 
 
 def dedupe_streaming(
