@@ -20,6 +20,7 @@ import shutil
 import signal
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -223,6 +224,8 @@ def dedupe_streaming(
     cache_dir: Path,
     input_dir: Path,
     dry_run: bool,
+    delete_mode: bool = False,
+    workers: int = 4,
 ) -> None:
     """Find duplicates using streaming FAISS search."""
     print("\n[+] Building FAISS index...")
@@ -303,24 +306,57 @@ def dedupe_streaming(
         if len(redundant_indices) > 10:
             print(f"  ... and {len(redundant_indices) - 10} more")
     else:
-        print(f"\nDeleting {len(redundant_indices)} files...")
-        redundant_dir = input_dir / "redundant"
-        redundant_dir.mkdir(exist_ok=True)
+        redundant_list = sorted(redundant_indices)
+        total = len(redundant_list)
 
-        for idx in tqdm(sorted(redundant_indices), desc="Moving"):
-            if idx >= len(all_paths):
-                continue
-            src = all_paths[idx]
-            try:
-                dest = redundant_dir / src.name
-                if dest.exists():
-                    dest = (
-                        redundant_dir
-                        / f"{src.stem}_{int(time.time() * 1000)}{src.suffix}"
+        if delete_mode:
+            # Fast: delete files in parallel
+            print(f"\n[+] Deleting {total} files with {workers} workers...")
+
+            def delete_file(idx) -> None:
+                if idx < len(all_paths):
+                    try:
+                        all_paths[idx].unlink()
+                    except Exception:
+                        pass
+
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                list(
+                    tqdm(
+                        executor.map(delete_file, redundant_list),
+                        total=total,
+                        desc="Deleting",
                     )
-                shutil.move(str(src), str(dest))
-            except Exception:
-                pass
+                )
+        else:
+            # Slower: move files to redundant folder
+            print(f"\nMoving {total} files with {workers} workers...")
+            redundant_dir = input_dir / "redundant"
+            redundant_dir.mkdir(exist_ok=True)
+
+            def move_file(idx) -> None:
+                if idx >= len(all_paths):
+                    return
+                src = all_paths[idx]
+                try:
+                    dest = redundant_dir / src.name
+                    if dest.exists():
+                        dest = (
+                            redundant_dir
+                            / f"{src.stem}_{int(time.time() * 1000)}{src.suffix}"
+                        )
+                    shutil.move(str(src), str(dest))
+                except Exception:
+                    pass
+
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                list(
+                    tqdm(
+                        executor.map(move_file, redundant_list),
+                        total=total,
+                        desc="Moving",
+                    )
+                )
 
     # Cleanup checkpoints
     if not checkpoint_state["interrupted"] and not dry_run:
@@ -346,6 +382,17 @@ def main() -> None:
     parser.add_argument("--cache", default="/home/phips/.cache/lucid_dedupe")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--clear-cache", action="store_true")
+    parser.add_argument(
+        "--delete-mode",
+        action="store_true",
+        help="Delete duplicates instead of moving to 'redundant' folder (much faster)",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=4,
+        help="Parallel workers for file deletion (default: 4)",
+    )
 
     args = parser.parse_args()
 
@@ -387,6 +434,8 @@ def main() -> None:
         cache_dir=cache_dir,
         input_dir=input_dir,
         dry_run=args.dry_run,
+        delete_mode=args.delete_mode,
+        workers=args.workers,
     )
 
 
