@@ -83,10 +83,10 @@ This led to LUCID's core premise: **Focus on degradation-free, structurally nove
 
 ### Naming
 **LUCID** = Lucent Understanding via Correlation and Independence in Data  
-- *Lucent*: Clear, transparent, radiating light (clarity of purpose)  
+- *Lucent*: Clear, transparent, radiating light (clarity of purpose) - from original concept as "L**earnable** **U**nder-sampling **C**onsistency & **I**ntegrity **D**iscovery"  
 - *Understanding*: Structural comprehension over surface appeal  
-- *Correlation*: Identifying meaningful relationships in data (complexity scoring)  
-- *Independence*: Eliminating redundancy through deduplication  
+- *Correlation*: Identifying meaningful relationships in data (complexity scoring via ICNet)  
+- *Independence*: Eliminating redundancy through deduplication (ResNet18 fingerprints)  
 
 ## Performance Tips
 - **Train from SSD/NVMe**: Never train directly from HDD (seek time kills GPU utilization)
@@ -113,3 +113,13 @@ From the BHI filtering experiments ([Blog Post](https://huggingface.co/blog/Phip
 - **IC9600 >= 0.4**: Higher complexity filtering showed benefits, though optimal threshold varied by dataset
 - **Surprising finding**: Models trained on 69% reduced datasets (BHI-filtered DF2K) often outperformed full datasets in PSNR/SSIM/DISTS metrics
 - **Dataset quantity matters**: Extreme reduction (like ImageNet-BHI at 2.3%) hurt performance, suggesting ideal retention rate exists
+
+## Philosophical Foundation
+LUCID represents the culmination of realizing that:
+1. SISR networks optimize mathematical loss functions, not human opinion scores
+2. Degradation-free, structurally novel data provides more consistent learning signals
+3. Diversity prevents overfitting to common textures
+4. Traceability enables scientific ablation studies
+5. System safety (`os.nice(15)`) allows background processing without disrupting workflow
+
+This approach shifts focus from "What looks good?" to "What helps the network learn best?"
