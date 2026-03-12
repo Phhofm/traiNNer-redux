@@ -71,13 +71,17 @@ def process_tile(task: dict[str, Any]) -> dict[str, Any]:
 
 
 def main() -> None:
-    # Priority: Full power for the final consolidation
+    # Priority: System safety first for remote desktop stability
+    try:
+        os.nice(15)
+    except:
+        pass
     parser = argparse.ArgumentParser(description="LUCID v2 - Finalize TURBO v3")
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--move", action="store_true")
     parser.add_argument("--workers", type=int, default=1)
-    parser.add_argument("--chunk", type=int, default=5000)
+    parser.add_argument("--chunk", type=int, default=1000)
 
     args = parser.parse_args()
     input_dir = Path(args.input)
@@ -162,11 +166,15 @@ def main() -> None:
                 with ThreadPoolExecutor(max_workers=args.workers) as executor:
                     results = list(executor.map(process_tile, tasks))
             else:
-                results = [process_tile(t) for t in tasks]
+                results = []
+                for t in tasks:
+                    results.append(process_tile(t))
+                    pbar.update(1)
 
             writer.writerows([r["record"] for r in results if r["success"]])
             f.flush()
-            pbar.update(len(chunk))
+            if args.workers > 1:
+                pbar.update(len(chunk))
 
     pbar.close()
     print(f"\nFinal ID: {new_index - 1}")
