@@ -61,29 +61,31 @@ My path to LUCID came from years of experimenting with SISR dataset creation, ev
 - **PSISRD Validation**: Comprehensive IQA metric evaluation (125+ metrics)  
   [HuggingFace Dataset](https://huggingface.co/datasets/Phips/PSISRD_val125)
 
-**Key Insight**: Filtering with thousands of IQA models revealed:
-1. **Computational infeasibility**: Days-long processing for large datasets
-2. **Conceptual mismatch**: Human-pleasing metrics (MOS, NIQE, etc.) don't necessarily optimize SR network learning
+**Key Insights from Journey**:
+1. **Computational infeasibility**: Filtering with thousands of IQA models revealed days-long processing times for large datasets
+2. **Conceptual mismatch**: Human-pleasing metrics (MOS, NIQE, etc.) don't necessarily optimize SR network learning - observed through inconsistent "best" checkpoint selections across different metrics
+3. **Degradation sensitivity**: Noticed that even standard datasets like Urban100 gave different results based on downscaling method (Pillow vs MATLAB), motivating standardized validation sets
+4. **Key realization**: What helps SISR training isn't what looks pleasing to humans, but what provides meaningful structural gradients during optimization
 
-This led to LUCID's core premise: **What helps SISR training isn't what looks pleasing to humans, but what provides meaningful structural gradients during optimization**.
+This led to LUCID's core premise: **Focus on degradation-free, structurally novel data that provides consistent learning signals rather than human-perception scores**.
 
 ## Key Principles
 
 ### Why LUCID?
 - **Problem**: Human perception scores prioritize "pretty" textures, not SR-useful ones
-- **Solution**: Mathematical measures of information density and structural novelty
-- **Goal**: Maximize Urban100 validation performance through better data, not just more data
+- **Solution**: Mathematical measures of information density (ICNet complexity) and structural novelty (ResNet18 deduplication)
+- **Goal**: Maximize Urban100 validation performance through better data curation, not just more data
 
 ### Ideology
-- **Anti-Bias**: Explicitly avoids metrics trained on human opinion
-- **Focus**: What provides meaningful gradients during HAT-M training
-- **Output**: Mathematically sound dataset with complete provenance
+- **Anti-Bias**: Explicitly avoids metrics trained on human opinion (MOS, NIQE, BIQE, etc.)
+- **Focus**: What provides meaningful gradients during HAT-M training - verified through empirical testing
+- **Output**: Mathematically sound dataset with complete provenance for ablation studies
 
 ### Naming
 **LUCID** = Lucent Understanding via Correlation and Independence in Data  
 - *Lucent*: Clear, transparent, radiating light (clarity of purpose)  
 - *Understanding*: Structural comprehension over surface appeal  
-- *Correlation*: Identifying meaningful relationships in data  
+- *Correlation*: Identifying meaningful relationships in data (complexity scoring)  
 - *Independence*: Eliminating redundancy through deduplication  
 
 ## Performance Tips
@@ -103,3 +105,11 @@ This led to LUCID's core premise: **What helps SISR training isn't what looks pl
 2. Train HAT-M standard configuration
 3. Compare Urban100 validation curves against baseline (e.g., DIV2K, DiverSEG-IP)
 4. Expect: Faster convergence and/or higher peak PSNR/SSIM
+
+## Key Learnings from BHI Work
+From the BHI filtering experiments ([Blog Post](https://huggingface.co/blog/Phips/bhi-filtering)):
+- **Blockiness < 30**: Critical for handling JPG compression artifacts detrimental to SR training
+- **HyperIQA >= 0.2**: Removing only the worst tiles (bottom 20%) improved metrics more than keeping only the best
+- **IC9600 >= 0.4**: Higher complexity filtering showed benefits, though optimal threshold varied by dataset
+- **Surprising finding**: Models trained on 69% reduced datasets (BHI-filtered DF2K) often outperformed full datasets in PSNR/SSIM/DISTS metrics
+- **Dataset quantity matters**: Extreme reduction (like ImageNet-BHI at 2.3%) hurt performance, suggesting ideal retention rate exists
