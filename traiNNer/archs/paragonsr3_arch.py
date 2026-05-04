@@ -71,10 +71,10 @@ class iLN(nn.Module):
 
         x_norm = (x - mean) / std
 
-        # Compute texture energy from RAW input (before normalization)
-        # This gives meaningful variance signal for routing
-        local_energy = torch.mean(x**2, dim=1, keepdim=True)
-        local_std = torch.sqrt(local_energy + self.eps)
+        # Compute texture variance from RAW input (before normalization)
+        # This gives a structurally sharper variance signal for routing
+        local_var = torch.var(x.float(), dim=1, keepdim=True, unbiased=False)
+        local_std = torch.sqrt(local_var.to(x.dtype) + self.eps)
 
         return self.weight * x_norm + self.bias, local_std
 
@@ -229,7 +229,7 @@ class GatedRepConv(nn.Module):
 
 
 class WindowAttention(nn.Module):
-    """Standard SDPA Window Attention."""
+    """Standard SDPA Window Attention with Depthwise Halo Exchange."""
 
     def __init__(
         self, dim: int, num_heads: int, window_size: int = 16, shift_size: int = 0
@@ -239,10 +239,18 @@ class WindowAttention(nn.Module):
         self.window_size = window_size
         self.shift_size = shift_size
         self.num_heads = num_heads
+
+        # Halo Exchange (Depthwise Conv) to bleed info across window boundaries
+        self.halo_exchange = nn.Conv2d(dim, dim, kernel_size=3, padding=1, groups=dim)
+
         self.qkv = nn.Linear(dim, dim * 3)
         self.proj = nn.Linear(dim, dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Halo Exchange: 3x3 Depthwise Conv before attention
+        x_conv = x.permute(0, 3, 1, 2)
+        x = x + self.halo_exchange(x_conv).permute(0, 2, 3, 1)
+
         B, H, W, C = x.shape
         ws = self.window_size
         pad_h = (ws - H % ws) % ws
@@ -287,21 +295,33 @@ class WindowAttention(nn.Module):
 
 
 class TokenDictionaryCA(nn.Module):
-    """Global Context Beacon."""
+    """Global Context Beacon with Dynamic Tokens (IET-inspired)."""
 
     def __init__(self, dim: int, num_tokens: int = 64) -> None:
         super().__init__()
-        self.token_dict = nn.Parameter(torch.randn(1, num_tokens, dim) * 0.02)
-        self.q_proj = nn.Linear(dim, 32)  # Compressed QK for speed
-        self.k_proj = nn.Linear(dim, 32)
+        self.num_tokens = num_tokens
+        qk_dim = dim // 2  # Compressed QK for speed
+        self.q_proj = nn.Linear(dim, qk_dim)
+        self.k_proj = nn.Linear(dim, qk_dim)
         self.v_proj = nn.Linear(dim, dim)
         self.out_proj = nn.Linear(dim, dim)
-        self.scale = 32**-0.5
+        self.scale = qk_dim**-0.5
+
+        # Generator for dynamic, image-specific tokens
+        self.token_generator = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(dim, dim, 1),
+            nn.GELU(),
+            nn.Conv2d(dim, dim * num_tokens, 1),
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, C, H, W = x.shape
         x_flat = x.flatten(2).transpose(1, 2)  # (B, N, C)
-        td = self.token_dict.expand(B, -1, -1)
+
+        # Generate dynamic tokens based on the global image context
+        # Output shape: (B, num_tokens, C)
+        td = self.token_generator(x).view(B, self.num_tokens, C)
 
         q = self.q_proj(x_flat)
         k = self.k_proj(td)
@@ -342,7 +362,7 @@ class ParagonBlock(nn.Module):
 
         # 1. GatedRepConv (The Engine)
         self.conv = GatedRepConv(dim, int(dim * 2.0))
-        self.scale1 = LayerScale(dim, init_values=0.1)
+        self.scale1 = LayerScale(dim, init_values=1e-4)
 
         # 2. Beacons
         self.use_window = use_window
@@ -350,14 +370,14 @@ class ParagonBlock(nn.Module):
             self.norm2 = iLN(dim)
             self.attn_win = WindowAttention(dim, 4, window_size, shift_size)
             self.router2 = VarianceRouter()
-            self.scale2 = LayerScale(dim, init_values=0.1)
+            self.scale2 = LayerScale(dim, init_values=1e-4)
 
         self.use_token = use_token
         if use_token:
             self.norm3 = iLN(dim)
             self.attn_tok = TokenDictionaryCA(dim, num_tokens=64)
             self.router3 = VarianceRouter()
-            self.scale3 = LayerScale(dim, init_values=0.1)
+            self.scale3 = LayerScale(dim, init_values=1e-4)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Conv
@@ -415,7 +435,7 @@ class ParagonUpsampler(nn.Module):
             # 1x = Denoising/Refinement only
             self.net = nn.Sequential(
                 nn.Conv2d(in_channels, in_channels, 3, 1, 1),
-                nn.GELU(),
+                nn.SiLU(),
                 nn.Conv2d(in_channels, out_channels, 3, 1, 1),
             )
         elif scale in (2, 4):
@@ -495,7 +515,8 @@ class ParagonSR3(nn.Module):
             self.conv_in = nn.Conv2d(in_chans, num_feat, 3, padding=1)
 
         # Body (Shared across all scales)
-        groups = []
+        # We store groups in a ModuleList instead of Sequential so we can tap intermediate features
+        self.body = nn.ModuleList()
         for g in range(num_groups):
             blocks = []
             for b in range(num_blocks):
@@ -516,6 +537,11 @@ class ParagonSR3(nn.Module):
                         use_window = True
                         if abs_idx % 2 == 1:
                             use_token = True
+                elif variant == "video":
+                    # Video: Pure CNN engine generally, but inject sparse global context
+                    # tokens to combat large compression macroblocks.
+                    if b == num_blocks // 2:
+                        use_token = True
 
                 blocks.append(
                     ParagonBlock(
@@ -526,11 +552,13 @@ class ParagonSR3(nn.Module):
                         shift_size=shift,
                     )
                 )
-            groups.append(ResidualGroup(blocks))
+            self.body.append(ResidualGroup(blocks))
 
-        self.body = nn.Sequential(*groups)
+        # Hierarchical Feature Fusion: Aggregate tapped group outputs
+        # We concatenate features from the input conv + every group, then compress
+        self.fusion_conv = nn.Conv2d(num_feat * (num_groups + 1), num_feat, 1)
 
-        # Pre-upsample processing
+        # Pre-upsample processing (Refines the fused features)
         self.conv_mid = nn.Conv2d(num_feat, num_feat, 3, padding=1)
         self.final_norm = AffineTransform(num_feat)
 
@@ -598,8 +626,16 @@ class ParagonSR3(nn.Module):
         else:
             x = self.conv_in(x)
 
-        # 3. Body (The expensive shared part)
-        x = self.body(x)
+        # 3. Body (The expensive shared part) with Hierarchical Feature Tapping
+        features_to_fuse = [x]  # Start with the early extracted features
+
+        for group in self.body:
+            x = group(x)
+            features_to_fuse.append(x)
+
+        # Cross-Scale Feature Fusion: Concat all tapped hierarchies (high/mid/low freq)
+        x = torch.cat(features_to_fuse, dim=1)
+        x = self.fusion_conv(x)
 
         # 4. Tap Output Features for Next Frame (Video)
         current_feat = x
@@ -657,13 +693,15 @@ class ParagonSR3ExportWrapper(nn.Module):
 
 
 @ARCH_REGISTRY.register()
-def paragonsr3_video(scale: int = 4, **kw):
+def paragonsr3_video(scales: tuple[int, ...] | list[int] | int = (1, 2, 3, 4), **kw):
     """
-    ParagonSR3 'Aegis' (Video) - Single Scale.
-    Recurrent state for temporal stability, pure convolution for speed.
+    ParagonSR3 'Aegis' (Video) - Multi-Scale by default.
+    Recurrent state for temporal stability, pure convolution for speed, sparse global context.
     """
+    if isinstance(scales, tuple):
+        scales = list(scales)
     return ParagonSR3(
-        scales=scale,
+        scales=scales,
         num_feat=64,
         num_groups=4,
         num_blocks=6,
@@ -674,50 +712,17 @@ def paragonsr3_video(scale: int = 4, **kw):
 
 
 @ARCH_REGISTRY.register()
-def paragonsr3_video_multiscale(**kw):
+def paragonsr3_photo(scales: tuple[int, ...] | list[int] | int = (1, 2, 3, 4), **kw):
     """
-    ParagonSR3 'Aegis' (Video) - Multi-Scale.
-    Train once, export 1x/2x/3x/4x models separately.
-    """
-    return ParagonSR3(
-        scales=[1, 2, 3, 4],
-        num_feat=64,
-        num_groups=4,
-        num_blocks=6,
-        variant="video",
-        detail_gain=0.1,
-        **kw,
-    )
-
-
-@ARCH_REGISTRY.register()
-def paragonsr3_photo(scale: int = 4, **kw):
-    """
-    ParagonSR3 'Virtuoso' (Photo) - Single Scale.
+    ParagonSR3 'Virtuoso' (Photo) - Multi-Scale by default.
     SCA + RepConv + Beacon Attention > HAT-L.
     """
+    if isinstance(scales, tuple):
+        scales = list(scales)
     return ParagonSR3(
-        scales=scale,
+        scales=scales,
         num_feat=180,  # HAT-L equivalent width
         num_groups=10,  # Slightly deeper for max quality
-        num_blocks=8,
-        variant="photo",
-        detail_gain=0.2,
-        **kw,
-    )
-
-
-@ARCH_REGISTRY.register()
-def paragonsr3_photo_multiscale(**kw):
-    """
-    ParagonSR3 'Virtuoso' (Photo) - Multi-Scale.
-    Train once, export 1x/2x/3x/4x models separately.
-    Best quality through multi-task learning regularization.
-    """
-    return ParagonSR3(
-        scales=[1, 2, 3, 4],
-        num_feat=180,
-        num_groups=10,
         num_blocks=8,
         variant="photo",
         detail_gain=0.2,

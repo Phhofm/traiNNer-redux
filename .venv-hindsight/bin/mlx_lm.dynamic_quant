@@ -1,0 +1,6 @@
+#!/home/phhofm/Documents/GitHub/traiNNer-redux/.venv-hindsight/bin/python
+import sys
+from mlx_lm.quant.dynamic_quant import main
+if __name__ == '__main__':
+    sys.argv[0] = sys.argv[0].removesuffix('.exe')
+    sys.exit(main())

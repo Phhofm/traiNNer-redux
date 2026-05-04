@@ -1,0 +1,261 @@
+[
+  {
+    "timestamp": "2026-05-04T07:46:20.348Z",
+    "score": 46,
+    "grade": "F",
+    "dimensions": [
+      {
+        "name": "Coupling",
+        "score": 90,
+        "grade": "A"
+      },
+      {
+        "name": "Cohesion",
+        "score": 40,
+        "grade": "F"
+      },
+      {
+        "name": "Circular Dependencies",
+        "score": 40,
+        "grade": "F"
+      },
+      {
+        "name": "God Files",
+        "score": 20,
+        "grade": "F"
+      },
+      {
+        "name": "Orphans & Dead Code",
+        "score": 20,
+        "grade": "F"
+      },
+      {
+        "name": "Dependency Depth",
+        "score": 20,
+        "grade": "F"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-05-04T08:05:52.968Z",
+    "score": 46,
+    "grade": "F",
+    "dimensions": [
+      {
+        "name": "Coupling",
+        "score": 90,
+        "grade": "A"
+      },
+      {
+        "name": "Cohesion",
+        "score": 40,
+        "grade": "F"
+      },
+      {
+        "name": "Circular Dependencies",
+        "score": 40,
+        "grade": "F"
+      },
+      {
+        "name": "God Files",
+        "score": 20,
+        "grade": "F"
+      },
+      {
+        "name": "Orphans & Dead Code",
+        "score": 20,
+        "grade": "F"
+      },
+      {
+        "name": "Dependency Depth",
+        "score": 20,
+        "grade": "F"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-05-04T08:05:52.996Z",
+    "score": 46,
+    "grade": "F",
+    "dimensions": [
+      {
+        "name": "Coupling",
+        "score": 90,
+        "grade": "A"
+      },
+      {
+        "name": "Cohesion",
+        "score": 40,
+        "grade": "F"
+      },
+      {
+        "name": "Circular Dependencies",
+        "score": 40,
+        "grade": "F"
+      },
+      {
+        "name": "God Files",
+        "score": 20,
+        "grade": "F"
+      },
+      {
+        "name": "Orphans & Dead Code",
+        "score": 20,
+        "grade": "F"
+      },
+      {
+        "name": "Dependency Depth",
+        "score": 20,
+        "grade": "F"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-05-04T08:06:09.356Z",
+    "score": 46,
+    "grade": "F",
+    "dimensions": [
+      {
+        "name": "Coupling",
+        "score": 90,
+        "grade": "A"
+      },
+      {
+        "name": "Cohesion",
+        "score": 40,
+        "grade": "F"
+      },
+      {
+        "name": "Circular Dependencies",
+        "score": 40,
+        "grade": "F"
+      },
+      {
+        "name": "God Files",
+        "score": 20,
+        "grade": "F"
+      },
+      {
+        "name": "Orphans & Dead Code",
+        "score": 20,
+        "grade": "F"
+      },
+      {
+        "name": "Dependency Depth",
+        "score": 20,
+        "grade": "F"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-05-04T08:06:09.423Z",
+    "score": 46,
+    "grade": "F",
+    "dimensions": [
+      {
+        "name": "Coupling",
+        "score": 90,
+        "grade": "A"
+      },
+      {
+        "name": "Cohesion",
+        "score": 40,
+        "grade": "F"
+      },
+      {
+        "name": "Circular Dependencies",
+        "score": 40,
+        "grade": "F"
+      },
+      {
+        "name": "God Files",
+        "score": 20,
+        "grade": "F"
+      },
+      {
+        "name": "Orphans & Dead Code",
+        "score": 20,
+        "grade": "F"
+      },
+      {
+        "name": "Dependency Depth",
+        "score": 20,
+        "grade": "F"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-05-04T08:57:28.566Z",
+    "score": 46,
+    "grade": "F",
+    "dimensions": [
+      {
+        "name": "Coupling",
+        "score": 90,
+        "grade": "A"
+      },
+      {
+        "name": "Cohesion",
+        "score": 40,
+        "grade": "F"
+      },
+      {
+        "name": "Circular Dependencies",
+        "score": 40,
+        "grade": "F"
+      },
+      {
+        "name": "God Files",
+        "score": 20,
+        "grade": "F"
+      },
+      {
+        "name": "Orphans & Dead Code",
+        "score": 20,
+        "grade": "F"
+      },
+      {
+        "name": "Dependency Depth",
+        "score": 20,
+        "grade": "F"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-05-04T09:29:07.416Z",
+    "score": 46,
+    "grade": "F",
+    "dimensions": [
+      {
+        "name": "Coupling",
+        "score": 90,
+        "grade": "A"
+      },
+      {
+        "name": "Cohesion",
+        "score": 40,
+        "grade": "F"
+      },
+      {
+        "name": "Circular Dependencies",
+        "score": 40,
+        "grade": "F"
+      },
+      {
+        "name": "God Files",
+        "score": 20,
+        "grade": "F"
+      },
+      {
+        "name": "Orphans & Dead Code",
+        "score": 20,
+        "grade": "F"
+      },
+      {
+        "name": "Dependency Depth",
+        "score": 20,
+        "grade": "F"
+      }
+    ]
+  }
+]
