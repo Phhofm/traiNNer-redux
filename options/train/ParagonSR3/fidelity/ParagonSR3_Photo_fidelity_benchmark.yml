@@ -1,0 +1,126 @@
+# ============================================================================
+# PARAGONSR3 PHOTO: MULTI-SCALE FIDELITY TRAINING CONFIGURATION (BENCHMARK)
+# ============================================================================
+# Model: ParagonSR3 "Virtuoso" Photo Multi-Scale
+# Purpose: Train once, export 1x/2x/3x/4x models for PSNR benchmark against HAT-L/M
+# Method: On-the-fly LR generation from pristine GT
+# Hardware: Optimized for RTX 3060 (12GB) / Ryzen 3600 / 16GB RAM
+# ============================================================================
+
+name: ParagonSR3_Photo_fidelity_benchmark
+model_type: MultiScaleSRModel
+scale: 4
+fast_matmul: true
+
+# MULTI-SCALE CONFIGURATION
+# ----------------------------------------------------------------------------
+multiscale:
+  scales: [1, 2, 3, 4]
+  degradation_mode: bicubic
+  denoise_sigma: 0.02
+
+# AMP & TENSOR CORE OPTIMIZATIONS
+# ----------------------------------------------------------------------------
+use_amp: true
+amp_bf16: true
+use_channels_last: true
+num_gpu: auto
+use_compile: false
+
+# DATASET CONFIGURATION
+# ----------------------------------------------------------------------------
+# NOTE: Update these paths to your dataset location.
+# Standard SISR datasets: DIV2K (800 train) + Flickr2K (2650 train)
+# Validation: Urban100, Set5, Set14
+datasets:
+  train:
+    name: TrainDataset
+    type: singleimagedataset
+    dataroot_gt: datasets/train/div2k_hr  # <= CHANGE THIS
+
+    gt_size: 256       # LR size = 64 for 4x
+    batch_size_per_gpu: 4
+    num_worker_per_gpu: 8
+    accum_iter: 1
+    prefetch_mode: ~
+    pin_memory: true
+
+    use_hflip: true
+    use_rot: true
+
+  val:
+    name: Urban100
+    type: pairedimagedataset
+    dataroot_gt: datasets/val/urban100/hr   # <= CHANGE THIS
+    dataroot_lq: datasets/val/urban100/x4
+
+# ARCHITECTURE CONFIGURATION
+# ----------------------------------------------------------------------------
+network_g:
+  type: paragonsr3_photo_multiscale
+  drop_path_rate: 0.1   # NEW: Stochastic depth, improves generalization
+
+# TRAINING STRATEGY
+# ----------------------------------------------------------------------------
+path:
+  pretrain_network_g: ~
+  strict_load_g: true
+
+train:
+  ema_decay: 0.999
+  ema_power: 0.75
+  grad_clip: true
+
+  optim_g:
+    type: AdamW
+    lr: !!float 2e-4
+    weight_decay: 0   # Match HAT-M baseline (0)
+    betas: [0.9, 0.99]
+
+  scheduler:
+    type: MultiStepLR
+    # Milestones tuned for 800k iterations
+    milestones: [300000, 500000, 650000, 700000, 750000]
+    gamma: 0.5
+
+  total_iter: 800000   # Match HAT-M for fair comparison
+  warmup_iter: 3000
+
+  # FIDELITY LOSS: Try both options
+  # Option A: Charbonnier (HAT default)
+  losses:
+    - type: charbonnierloss
+      loss_weight: 1.0
+
+  # Option B: L1+MSSIM (your original)
+  # losses:
+  #   - type: l1loss
+  #     loss_weight: 1.0
+  #   - type: mssimloss
+  #     loss_weight: 0.08
+
+# VALIDATION & METRICS
+# ----------------------------------------------------------------------------
+val:
+  val_enabled: true
+  val_freq: 5000
+  save_img: false
+
+  metrics_enabled: true
+  metrics:
+    psnr:
+      type: calculate_psnr
+      crop_border: 4
+      test_y_channel: true
+    ssim:
+      type: calculate_ssim
+      crop_border: 4
+      test_y_channel: true
+
+# LOGGING & CHECKPOINTING
+# ----------------------------------------------------------------------------
+logger:
+  print_freq: 100
+  save_checkpoint_freq: 10000
+  save_checkpoint_format: safetensors
+  use_tb_logger: true

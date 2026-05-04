@@ -32,7 +32,6 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from torch.utils import checkpoint
-
 from traiNNer.utils.registry import ARCH_REGISTRY
 
 # ============================================================================
@@ -200,19 +199,44 @@ class SimpleGate(nn.Module):
         return x1 * x2
 
 
+def drop_path(x, drop_prob: float = 0.0, training: bool = False):
+    """Drop paths (Stochastic Depth) per sample."""
+    if drop_prob == 0.0 or not training:
+        return x
+    keep_prob = 1 - drop_prob
+    shape = (x.shape[0],) + (1,) * (x.ndim - 1)
+    random_tensor = keep_prob + torch.rand(shape, dtype=x.dtype, device=x.device)
+    random_tensor.floor_()
+    output = x.div(keep_prob) * random_tensor
+    return output
+
+
+class DropPath(nn.Module):
+    """Drop paths (Stochastic Depth) per sample."""
+
+    def __init__(self, drop_prob: float = 0.0) -> None:
+        super().__init__()
+        self.drop_prob = drop_prob
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return drop_path(x, self.drop_prob, self.training)
+
+
 class GatedRepConv(nn.Module):
     """
     Enhanced GatedRepConv.
     Now includes SimpleChannelAttention (SCA) to boost PSNR validation metrics.
+    Optional stochastic depth for regularization.
     """
 
-    def __init__(self, dim: int, hidden_dim: int) -> None:
+    def __init__(self, dim: int, hidden_dim: int, drop_path: float = 0.0) -> None:
         super().__init__()
         self.conv1 = nn.Conv2d(dim, hidden_dim * 2, 1)
         self.dw = RepDepthwise(hidden_dim * 2, kernel_size=3)
         self.gate = SimpleGate()
         self.sca = SimpleChannelAttention(hidden_dim)  # Added for PSNR
         self.conv2 = nn.Conv2d(hidden_dim, dim, 1)
+        self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.conv1(x)
@@ -220,6 +244,7 @@ class GatedRepConv(nn.Module):
         x = self.gate(x)
         x = self.sca(x)  # Apply SCA on the active features
         x = self.conv2(x)
+        x = self.drop_path(x)
         return x
 
 
@@ -357,11 +382,12 @@ class ParagonBlock(nn.Module):
         use_token: bool = False,
         window_size: int = 16,
         shift_size: int = 0,
+        drop_path: float = 0.0,
     ) -> None:
         super().__init__()
 
         # 1. GatedRepConv (The Engine)
-        self.conv = GatedRepConv(dim, int(dim * 2.0))
+        self.conv = GatedRepConv(dim, int(dim * 2.0), drop_path)
         self.scale1 = LayerScale(dim, init_values=1e-4)
 
         # 2. Beacons
@@ -483,6 +509,7 @@ class ParagonSR3(nn.Module):
         window_size: Window size for attention.
         variant: 'video' or 'photo'.
         detail_gain: Initial scaling for detail residual.
+        drop_path_rate: Stochastic depth rate (0-0.5). Recommended: 0.1 for photo, 0.05 for video.
     """
 
     def __init__(
@@ -495,6 +522,7 @@ class ParagonSR3(nn.Module):
         window_size: int = 16,
         variant: str = "photo",  # 'video', 'photo'
         detail_gain: float = 0.2,
+        drop_path_rate: float = 0.0,
     ) -> None:
         super().__init__()
         self.variant = variant
@@ -506,6 +534,13 @@ class ParagonSR3(nn.Module):
             self.supported_scales = [scales]
         else:
             self.supported_scales = sorted(scales)
+
+        # Stochastic depth schedule
+        total_blocks = num_groups * num_blocks
+        if drop_path_rate > 0:
+            dpr = torch.linspace(0, drop_path_rate, total_blocks).tolist()
+        else:
+            dpr = [0.0] * total_blocks
 
         # Input
         if variant == "video":
@@ -522,6 +557,7 @@ class ParagonSR3(nn.Module):
             for b in range(num_blocks):
                 abs_idx = g * num_blocks + b
                 shift = (window_size // 2) if (abs_idx % 2 != 0) else 0
+                block_drop_path = dpr[abs_idx]
 
                 use_window = False
                 use_token = False
@@ -550,6 +586,7 @@ class ParagonSR3(nn.Module):
                         use_token=use_token,
                         window_size=window_size,
                         shift_size=shift,
+                        drop_path=block_drop_path,
                     )
                 )
             self.body.append(ResidualGroup(blocks))
@@ -700,6 +737,8 @@ def paragonsr3_video(scales: tuple[int, ...] | list[int] | int = (1, 2, 3, 4), *
     """
     if isinstance(scales, tuple):
         scales = list(scales)
+    # Set default drop_path_rate for video if not provided
+    kw.setdefault("drop_path_rate", 0.05)
     return ParagonSR3(
         scales=scales,
         num_feat=64,
@@ -719,6 +758,8 @@ def paragonsr3_photo(scales: tuple[int, ...] | list[int] | int = (1, 2, 3, 4), *
     """
     if isinstance(scales, tuple):
         scales = list(scales)
+    # Set default drop_path_rate for photo if not provided
+    kw.setdefault("drop_path_rate", 0.1)
     return ParagonSR3(
         scales=scales,
         num_feat=180,  # HAT-L equivalent width
