@@ -105,8 +105,18 @@ class PairedVideoDataset(BaseDataset):
         for i in range(self.clip_size):
             lq_path, gt_path = clips[i]
 
-            vips_img_gt = vipsimfrompath(gt_path)
-            vips_img_lq = vipsimfrompath(lq_path)
+            try:
+                vips_img_gt = vipsimfrompath(gt_path)
+                vips_img_lq = vipsimfrompath(lq_path)
+            except Exception as e:
+                from traiNNer.utils.logger import get_root_logger
+
+                logger = get_root_logger()
+                logger.warning(
+                    f"Failed to load frame in clip {gt_path} / {lq_path}: {e}. Skipping to random sample."
+                )
+                # Skip this sample and try a random one
+                return self.__getitem__(random.randint(0, len(self.index_mapping) - 1))
 
             if self.opt.phase == "train":
                 assert self.gt_size is not None

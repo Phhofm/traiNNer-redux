@@ -70,7 +70,16 @@ class SingleImageDataset(BaseDataset):
 
         # load lq image
         lq_path = self.paths[index]
-        img_lq = img2rgb(vipsimfrompath(lq_path).numpy())
+        try:
+            img_lq = img2rgb(vipsimfrompath(lq_path).numpy())
+        except Exception as e:
+            from traiNNer.utils import get_root_logger
+            import random
+
+            logger = get_root_logger()
+            logger.warning(f"Failed to load image {lq_path}: {e}. Skipping to random sample.")
+            # Skip this sample and try a random one
+            return self.__getitem__(random.randint(0, len(self.paths) - 1))
 
         # color space transform
         if self.opt.color == "y":

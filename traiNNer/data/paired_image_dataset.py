@@ -92,18 +92,21 @@ class PairedImageDataset(BaseDataset):
         # Load gt and lq images. Dimension order: HWC; channel order: BGR;
         # image range: [0, 1], float32.
         gt_path = self.paths[index]["gt_path"]
-
-        try:
-            vips_img_gt = vipsimfrompath(gt_path)
-        except AttributeError as err:
-            raise AttributeError(gt_path) from err
-
         lq_path = self.paths[index]["lq_path"]
 
         try:
+            vips_img_gt = vipsimfrompath(gt_path)
             vips_img_lq = vipsimfrompath(lq_path)
-        except AttributeError as err:
-            raise AttributeError(lq_path) from err
+        except Exception as e:
+            from traiNNer.utils import get_root_logger
+            import random
+
+            logger = get_root_logger()
+            logger.warning(
+                f"Failed to load image pair {gt_path} / {lq_path}: {e}. Skipping to random sample."
+            )
+            # Skip this sample and try a random one
+            return self.__getitem__(random.randint(0, len(self.paths) - 1))
 
         # augmentation for training
         if self.opt.phase == "train":

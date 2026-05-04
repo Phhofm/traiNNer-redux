@@ -27,6 +27,9 @@ dependencies = [
   "torchvision",
   "tqdm",
   "transformers>=4.30.0",  # Required for CLIP-based ContrastiveLoss
+  "huggingface-hub<1.0.0",
+  "diffusers",
+  "accelerate",
 ]
 authors = [{name = "the-database"}]
 description = "Deep learning training framework for image super resolution and restoration."

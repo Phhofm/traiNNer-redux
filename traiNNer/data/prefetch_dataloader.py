@@ -1,12 +1,10 @@
-import logging
 import queue
 import threading
 import time
-import warnings
 import weakref
 from collections.abc import Iterator
-from threading import Event, Lock
-from typing import Any, Dict, Optional, Set
+from threading import Event
+from typing import Any
 
 import torch
 from torch.utils.data import DataLoader
@@ -46,13 +44,13 @@ class WorkerHealthMonitor:
                 dl = self.dataloader()
                 if dl is not None and hasattr(dl, "_workers"):
                     # Quick check without detailed PID tracking
-                    active_workers = [
+                    [
                         w
                         for w in dl._workers
                         if hasattr(w, "is_alive") and w.is_alive()
                     ]
 
-        except Exception as e:
+        except Exception:
             # Silently ignore health check errors to prevent hangs
             pass
 
@@ -401,13 +399,14 @@ class CPUPrefetcher:
             self.error_count += 1
 
             if self.error_count >= self.max_errors:
-                logger.warning("Too many errors, resetting CPU prefetcher")
-                self._create_iterator_safe()
-                self.error_count = 0
+                logger.error(
+                    f"Maximum errors ({self.max_errors}) reached in CPU prefetcher. Returning None to stop training."
+                )
+                return None
 
-            # Return None instead of raising to prevent training crashes
-            logger.warning("Returning None due to prefetch error")
-            return None
+            # Attempt to fetch the next batch instead of returning None
+            logger.warning("Attempting to skip fouled batch and fetch next...")
+            return self.next()
 
     def reset(self) -> None:
         """Reset the prefetcher."""
@@ -462,17 +461,16 @@ class CUDAPrefetcher:
 
             self.error_count += 1
             if self.error_count >= self.max_errors:
-                logger.error("Too many worker errors in CUDA prefetcher, resetting")
+                logger.error(
+                    f"Maximum worker errors ({self.max_errors}) reached in CUDA prefetcher, resetting..."
+                )
                 self.loader = iter(self.ori_loader)
-                try:
-                    self.batch = next(self.loader)
-                except StopIteration:
-                    self.batch = None
                 self.error_count = 0
-            else:
-                # Brief pause before retry
-                time.sleep(0.01)
-                raise
+
+            # Brief pause and retry preloading (skip the bad batch)
+            time.sleep(0.01)
+            self.preload()
+            return
 
         # put tensors to gpu
         if self.batch is not None:

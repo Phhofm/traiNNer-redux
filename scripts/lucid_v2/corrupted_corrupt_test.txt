@@ -1,0 +1,1 @@
+/tmp/corrupt_test/bad.png

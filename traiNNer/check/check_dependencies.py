@@ -15,13 +15,18 @@ def get_min_versions_from_pyproject() -> dict[str, str | None]:
         raise RuntimeError("No dependencies found in pyproject.toml") from err
 
     min_versions = {}
+    import re
     for dep in dependencies:
-        if ">=" in dep:
-            package, version = dep.split(">=")
-            min_versions[package.strip()] = version.strip()
-        else:
-            package = dep.split()[0].strip()
-            min_versions[package] = None
+        # Match the package name at the beginning, stopping at the first version operator or space
+        match = re.match(r"^([a-zA-Z0-9\-_]+)", dep)
+        if match:
+            package = match.group(1).strip()
+            if ">=" in dep:
+                # Still try to extract min version if present for >= check
+                version_match = re.search(r">=\s*([0-9a-zA-Z\.\-]+)", dep)
+                min_versions[package] = version_match.group(1).strip() if version_match else None
+            else:
+                min_versions[package] = None
 
     return min_versions
 

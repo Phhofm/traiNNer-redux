@@ -127,7 +127,15 @@ class RealESRGANDataset(BaseDataset):
         assert self.opt.use_hflip is not None
         assert self.opt.use_rot is not None
 
-        vips_img_gt = vipsimfrompath(gt_path)
+        try:
+            vips_img_gt = vipsimfrompath(gt_path)
+        except Exception as e:
+            from traiNNer.utils import get_root_logger
+
+            logger = get_root_logger()
+            logger.warning(f"Failed to load image {gt_path}: {e}. Skipping to random sample.")
+            # Skip this sample and try a random one
+            return self.__getitem__(random.randint(0, len(self.paths) - 1))
 
         # -------------------- Do augmentation for training: flip, rotation -------------------- #
         vips_img_gt = augment_vips(vips_img_gt, self.opt.use_hflip, self.opt.use_rot)

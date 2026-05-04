@@ -328,11 +328,57 @@ def imfrombytes(content: bytes, flag: str = "color", float32: bool = False) -> M
 
 
 def vipsimfrompath(path: str) -> pyvips.Image:
-    img = pyvips.Image.new_from_file(
-        path, access="sequential", fail=True
-    ).icc_transform("srgb")  # pyright: ignore[reportAttributeAccessIssue,reportOptionalMemberAccess]
-    assert isinstance(img, pyvips.Image)
-    return img
+    import time
+
+    from traiNNer.utils import get_root_logger
+
+    max_retries = 3
+    last_error = None
+
+    for attempt in range(max_retries):
+        try:
+            img = pyvips.Image.new_from_file(
+                path, access="sequential", fail=True
+            ).icc_transform("srgb")
+            assert isinstance(img, pyvips.Image)
+            return img
+        except Exception as e:
+            last_error = e
+            logger = get_root_logger()
+            if attempt < max_retries - 1:
+                logger.warning(
+                    f"Attempt {attempt + 1} failed loading {path} with pyvips: {e}. Retrying..."
+                )
+                time.sleep(0.1 * (2**attempt))  # Exponential backoff
+            else:
+                logger.warning(
+                    f"Pyvips failed to load {path} after {max_retries} attempts. Trying OpenCV fallback..."
+                )
+
+    # OpenCV Fallback
+    try:
+        # Support non-ASCII paths by reading to buffer first
+        with open(path, "rb") as f:
+            chunk = f.read()
+        img_np = np.frombuffer(chunk, np.uint8)
+        img_cv = cv2.imdecode(img_np, cv2.IMREAD_UNCHANGED)
+
+        if img_cv is not None:
+            # Convert CV2 (BGR/BGRA) to RGB/RGBA for consistency if needed,
+            # but pyvips.Image.new_from_array expects correct channel order.
+            # Most traiNNer datasets handle BGR/RGB conversion later.
+            if img_cv.ndim == 3 and img_cv.shape[2] == 3:
+                img_cv = cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB)
+            elif img_cv.ndim == 3 and img_cv.shape[2] == 4:
+                img_cv = cv2.cvtColor(img_cv, cv2.COLOR_BGRA_RGBA)
+
+            img = pyvips.Image.new_from_array(img_cv)
+            return img
+    except Exception as e:
+        logger = get_root_logger()
+        logger.error(f"OpenCV fallback also failed for {path}: {e}")
+
+    raise last_error if last_error else RuntimeError(f"Failed to load image: {path}")
 
 
 def imwrite(
