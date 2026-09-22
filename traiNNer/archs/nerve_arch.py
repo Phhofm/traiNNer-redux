@@ -75,11 +75,9 @@ class NERVE(nn.Module):
 
         self.stem = nn.Conv2d(in_ch, dim, 5, padding=2, bias=False)
         self.blocks = nn.Sequential(*[NerveBlock(dim) for _ in range(n_blocks)])
-        self.upsampler = nn.Sequential(
-            nn.Conv2d(dim, out_ch * upscale**2, 3, padding=1, bias=False),
-            nn.PixelShuffle(upscale),
-        )
-        _icnr_init(self.upsampler[0], upscale)
+        head = nn.Conv2d(dim, out_ch * upscale**2, 3, padding=1, bias=False)
+        self.upsampler = nn.Sequential(head, nn.PixelShuffle(upscale))
+        _icnr_init(head, upscale)
 
     def forward(self, x: Tensor) -> Tensor:
         feat = self.stem(x)
