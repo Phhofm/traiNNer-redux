@@ -45,6 +45,16 @@ TOPIQ/LPIPS-only subset, so users see the complete quality picture.
 `use_compile: true` — torch.compile now works through the GAN step (G + D
 trained 40 iters without inductor errors; verified with torch 2.11 + cu128).
 
+### `traiNNer/losses/contextual_loss.py`
+Bug fix: `loss = torch.tensor(0, …)` created an **integer** accumulator, so
+the VGG path crashed with `Float can't be cast to Long` — i.e. Contextual
+loss could never run as written. Now `torch.tensor(0.0, …)`.
+Also note (upstream gotcha, not changed): `layer_weights` keys must be
+written with the underscore before the block number (`relu_3_1`, not
+`relu3_1`) — `alt_layers_names` drops keys otherwise and the loss silently
+returns 0.
+- Tested: standalone forward/backward + full smoke training with nonzero loss.
+
 ## Not ported (on purpose)
 
 Research experiments from the playground snapshot (BOLT, DocRes, DRFT, NAFNet,

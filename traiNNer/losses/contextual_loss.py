@@ -96,7 +96,7 @@ class ContextualLoss(nn.Module):
                 "VGG model takes 3 channel images."
             )
 
-            loss = torch.tensor(0, device=images.device)
+            loss = torch.tensor(0.0, device=images.device)
             vgg_images = self.vgg_model(images)
             vgg_images = {k: v.clone().to(device) for k, v in vgg_images.items()}
             vgg_gt = self.vgg_model(gt)

@@ -1,0 +1,253 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/the-database/traiNNer-redux/refs/heads/master/schemas/redux-config.schema.json
+#########################################################################################
+# NERVE 2x — TOPIQ-NR driven — non-GAN, no-reference quality engine
+#
+# Goal: same guardrails as Sharpened DISTS, but the perceptual driver
+# is the no-reference TOPIQ (KonIQ) score being maximized.
+# WARNING: NR-IQA losses can be reward-hacked — judge visually and
+# keep the structural base strong.
+# EXPERIMENTAL: ablation candidate, not a release recipe yet.
+# EMA is required (LDL loss consumes the EMA output). No discriminator.
+#########################################################################################
+amp_bf16: true
+blur_prob: 0.6
+blur_prob2: 0.3
+compile_mode: default
+datasets:
+  train:
+    accum_iter: 1
+    batch_size_per_gpu: 4
+    betag_range:
+    - 0.5
+    - 4
+    betag_range2:
+    - 0.5
+    - 4
+    betap_range:
+    - 1
+    - 2
+    betap_range2:
+    - 1
+    - 2
+    blur_kernel_size: 12
+    blur_kernel_size2: 12
+    blur_sigma:
+    - 0.2
+    - 2
+    blur_sigma2:
+    - 0.2
+    - 1
+    dataroot_gt:
+    - datasets/train/lucid_hc512/hr
+    final_kernel_range:
+    - 5
+    - 17
+    kernel_list:
+    - iso
+    - aniso
+    - generalized_iso
+    - generalized_aniso
+    - plateau_iso
+    - plateau_aniso
+    kernel_list2:
+    - iso
+    - aniso
+    - generalized_iso
+    - generalized_aniso
+    - plateau_iso
+    - plateau_aniso
+    kernel_prob:
+    - 0.45
+    - 0.25
+    - 0.12
+    - 0.03
+    - 0.12
+    - 0.03
+    kernel_prob2:
+    - 0.45
+    - 0.25
+    - 0.12
+    - 0.03
+    - 0.12
+    - 0.03
+    kernel_range:
+    - 5
+    - 17
+    kernel_range2:
+    - 5
+    - 17
+    lq_size: 96
+    name: LUCID OTF Train
+    num_worker_per_gpu: 4
+    type: realesrgandataset
+    use_hflip: true
+    use_rot: true
+  val:
+    dataroot_gt:
+    - datasets/val/urban100/hr
+    dataroot_lq:
+    - datasets/val/urban100_otf_x2
+    name: Urban100 OTF x2 Val
+    type: pairedimagedataset
+fast_matmul: false
+gaussian_noise_prob: 0.4
+gaussian_noise_prob2: 0.3
+gray_noise_prob: 0.1
+gray_noise_prob2: 0.05
+high_order_degradation: true
+jpeg_prob: 0.4
+jpeg_prob2: 0.3
+jpeg_range:
+- 40
+- 95
+jpeg_range2:
+- 40
+- 95
+logger:
+  print_freq: 100
+  save_checkpoint_format: safetensors
+  save_checkpoint_freq: 5000
+  use_tb_logger: true
+lq_usm: true
+lq_usm_radius_range:
+- 1
+- 25
+name: 2x_otf_topiq_nr
+network_d: null
+network_g:
+  type: nerve
+noise_range:
+- 1
+- 15
+noise_range2:
+- 1
+- 10
+num_gpu: auto
+path:
+  param_key_g: null
+  pretrain_network_g: null
+  resume_state: null
+  strict_load_g: true
+poisson_scale_range:
+- 0.05
+- 2
+poisson_scale_range2:
+- 0.05
+- 1.5
+queue_size: 120
+resize_mode_list:
+- bilinear
+- bicubic
+- nearest-exact
+- lanczos
+resize_mode_list2:
+- bilinear
+- bicubic
+- nearest-exact
+- lanczos
+resize_mode_list3:
+- bilinear
+- bicubic
+- nearest-exact
+- lanczos
+resize_mode_prob:
+- 0.25
+- 0.25
+- 0.25
+- 0.25
+resize_mode_prob2:
+- 0.25
+- 0.25
+- 0.25
+- 0.25
+resize_mode_prob3:
+- 0.25
+- 0.25
+- 0.25
+- 0.25
+resize_prob:
+- 0.2
+- 0.7
+- 0.1
+resize_prob2:
+- 0.3
+- 0.4
+- 0.3
+resize_range:
+- 0.4
+- 1.5
+resize_range2:
+- 0.6
+- 1.2
+scale: 2
+train:
+  ema_decay: 0.999
+  ema_power: 0.75
+  grad_clip: false
+  grad_clip_max_norm: 100
+  losses:
+  - type: charbonnierloss
+    loss_weight: 1.0
+  - type: mssimloss
+    loss_weight: 0.5
+  - type: hsluvloss
+    loss_weight: 1.0
+  - type: ldlloss
+    loss_weight: 1.0
+    criterion: charbonnier
+  - type: contextualloss
+    loss_weight: 0.3
+    layer_weights: {'relu_3_1': 1.0, 'relu_4_2': 1.0}
+  - type: topiqnrloss
+    loss_weight: 0.2
+  - type: ffloss
+    loss_weight: 0.15
+  optim_d:
+    betas:
+    - 0.9
+    - 0.99
+    lr: 0.0001
+    type: AdamW
+    weight_decay: 0
+  optim_g:
+    betas:
+    - 0.9
+    - 0.99
+    lr: 0.0001
+    type: AdamW
+    weight_decay: 0
+  scheduler:
+    gamma: 0.5
+    milestones:
+    - 75000
+    - 120000
+    type: MultiStepLR
+  total_iter: 150000
+  warmup_iter: -1
+use_amp: true
+use_channels_last: true
+use_compile: true
+val:
+  metrics:
+    dists:
+      better: lower
+      type: calculate_dists
+    lpips:
+      better: lower
+      type: calculate_lpips
+    psnr:
+      crop_border: 2
+      test_y_channel: false
+      type: calculate_psnr
+    ssim:
+      crop_border: 2
+      test_y_channel: false
+      type: calculate_ssim
+    topiq:
+      type: calculate_topiq
+  metrics_enabled: true
+  save_img: false
+  tile_overlap: 8
+  tile_size: 0
+  val_enabled: true
+  val_freq: 25000
