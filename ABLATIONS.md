@@ -45,7 +45,29 @@ Configs on this branch, same protocol:
 | `4x_paired_gan_dists` | VGG19 → **DISTS** perceptual | DISTS features vs VGG features |
 | `4x_paired_sharpened_dists_pop` | S4 with DISTS 0.4→**0.8**, FF 0.15→**0.3** | can S4 gain pop without a D? |
 
-*(results to be filled in)*
+| Metric (↑/↓) | S4b pop (no D) | S3 GAN+DISTS | S2 GAN+ConvNeXt | S1 GAN+R3D |
+|---|---|---|---|---|
+| PSNR ↑ | 25.5053 | 25.5184 | **25.5519** | 25.3703 |
+| SSIM ↑ | 0.7294 | 0.7323 | **0.7330** | 0.7222 |
+| TOPIQ ↑ | 0.6889 | 0.7065 | 0.7065 | **0.7135** |
+| LPIPS ↓ | 0.1683 | 0.1552 | 0.1552 | **0.1383** |
+| DISTS ↓ | **0.1185** | **0.1185** | 0.1288 | 0.1225 |
+
+Round-2 findings:
+
+- **Hotting S4 up worked**: DISTS 0.1185 (best of ALL runs), LPIPS improved,
+  PSNR held — but TOPIQ/LPIPS still trail the GANs.
+- **ConvNeXt > VGG19 inside GAN** (S2 vs S0): PSNR +0.34, SSIM +0.0025 —
+  the modern feature extractor wins on fidelity; perceptual scores equal to S3.
+- **R3GAN D** (S1): best TOPIQ/LPIPS of round 2 with the lowest PSNR — the
+  "pop" is real but it costs fidelity most; SN-only D confirmed stable at 30k.
+- **S3 (DISTS in GAN)**: solid all-rounder, no dominant weakness.
+- Combined with round 1: S4b (no D) keeps DISTS parity with every GAN at
+  ~2x training speed and no D memory — but the GAN path with modern parts
+  (S1/S2) now leads TOPIQ/LPIPS.
+
+Next: visual comparison on real images decides the app's PERCEPTUAL profile
+(scores alone don't capture wobble/halos/checkerboard).
 
 ## Implementation notes (bug fixes made for these experiments)
 
