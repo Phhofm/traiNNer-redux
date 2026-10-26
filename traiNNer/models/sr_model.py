@@ -23,6 +23,7 @@ from traiNNer.archs.arch_info import ARCHS_WITHOUT_FP16
 from traiNNer.data.base_dataset import BaseDataset
 from traiNNer.data.degradations import resize_pt
 from traiNNer.losses import build_loss
+from traiNNer.losses.gan_loss import r1_penalty
 from traiNNer.metrics import calculate_metric
 from traiNNer.models.base_model import BaseModel
 from traiNNer.utils import get_root_logger, imwrite, tensor2img
@@ -235,6 +236,8 @@ class SRModel(BaseModel):
         self.accum_iters = self.opt.datasets["train"].accum_iter
 
         self.adaptive_d = train_opt.adaptive_d
+        self.net_d_reg_every = train_opt.net_d_reg_every
+        self.net_d_reg_weight = train_opt.net_d_reg_weight
         self.adaptive_d_ema_decay = train_opt.adaptive_d_ema_decay
         self.adaptive_d_threshold = train_opt.adaptive_d_threshold
         self.ema_decay = train_opt.ema_decay
@@ -743,7 +746,34 @@ class SRModel(BaseModel):
                 loss_dict["l_d_fake"] = l_d_fake
                 loss_dict["out_d_fake"] = torch.mean(fake_d_pred.detach())
 
-            self.scaler_d.scale((l_d_real + l_d_fake) / self.accum_iters).backward()
+            l_d_step = (l_d_real + l_d_fake) / self.accum_iters
+
+            # R1 regularization (StyleGAN2 lazy regularization): every
+            # net_d_reg_every iters, penalize the D gradient norm on real data.
+            # Scaled by reg_every so total regularization matches per-step R1.
+            reg_every = self.net_d_reg_every
+            reg_weight = self.net_d_reg_weight
+            if reg_every > 0 and reg_weight > 0 and current_iter % reg_every == 0:
+                real_img = (self._real_hr if self._real_hr is not None else self.gt)
+                real_img = real_img.detach().requires_grad_(True)
+                with torch.autocast(
+                    device_type=self.device.type,
+                    dtype=self.amp_dtype,
+                    enabled=False,  # penalty is a grad-norm: force fp32
+                ):
+                    real_pred = self.net_d(real_img)
+                    l_d_r1 = (
+                        r1_penalty(real_pred, real_img)
+                        * 0.5
+                        * reg_weight
+                        * reg_every
+                        / self.accum_iters
+                    )
+                loss_dict["l_d_r1"] = l_d_r1.detach()
+                self.scaler_d.scale(l_d_r1).backward()
+                l_d_step = l_d_step + l_d_r1.detach()
+
+            self.scaler_d.scale(l_d_step).backward()
 
             if apply_gradient:
                 self.scaler_d.unscale_(self.optimizer_d)

@@ -305,6 +305,18 @@ class TrainOptions(StrictStruct):
         dict[str, Any] | None,
         Meta(description="The optimizer to use for the discriminator model."),
     ] = None
+    net_d_reg_every: Annotated[
+        int,
+        Meta(
+            description="Run R1 regularization on the discriminator every N iterations (StyleGAN2 lazy regularization). 0 disables it. The penalty is scaled by this factor, keeping total regularization equivalent to applying it every step."
+        ),
+    ] = 16
+    net_d_reg_weight: Annotated[
+        float,
+        Meta(
+            description="R1 gamma for the discriminator regularization. Effective per-step weight is 0.5 * gamma * net_d_reg_every on reg steps."
+        ),
+    ] = 1.0
     optim_ae: Annotated[
         dict[str, Any] | None,
         Meta(description="The optimizer to use for the autoencoder model."),

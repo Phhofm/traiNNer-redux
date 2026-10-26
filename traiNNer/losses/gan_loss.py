@@ -177,7 +177,7 @@ def r1_penalty(real_pred: Tensor, real_img: Tensor) -> Tensor:
     grad_real = autograd.grad(
         outputs=real_pred.sum(), inputs=real_img, create_graph=True
     )[0]
-    grad_penalty = grad_real.pow(2).view(grad_real.shape[0], -1).sum(1).mean()
+    grad_penalty = grad_real.pow(2).reshape(grad_real.shape[0], -1).sum(1).mean()
     return grad_penalty
 
 
