@@ -1,14 +1,3 @@
-# yaml-language-server: $schema=https://raw.githubusercontent.com/the-database/traiNNer-redux/refs/heads/master/schemas/redux-config.schema.json
-#########################################################################################
-# NERVE 4x — S0 baseline — GAN engine (dunet D + VGG19 perceptual)
-#
-# ENGINE-COMPARISON RUN (GAN-replacement ablation, see FORK_CHANGES.md).
-# Paired bicubic LR (faster, no degradation noise) — rank engines here,
-# then confirm the winner once on OTF (the real-world release target).
-# Matched across all runs: patch 64, batch 8, seed 1024, compile, EMA
-# (LDL consumes the EMA output), warm-start from the official 4x NERVE
-# pretrain, Lucid CC0 val every 5k, checkpoints every 20k, 60k iters.
-#########################################################################################
 name: 4x_paired_gan_engine
 scale: 4
 use_amp: true
@@ -42,9 +31,9 @@ network_g:
   type: nerve
 path:
   pretrain_network_g: /home/phips/.cache/huggingface/hub/models--Phips--NERVE/snapshots/3619eb1a67d775d9357bdb808336700e681b3eaf/models/4x_NERVE_release.safetensors
-  param_key_g: '~'
+  param_key_g: null
   strict_load_g: true
-  resume_state: '~'
+  resume_state: null
 train:
   ema_decay: 0.999
   ema_power: 0.75
