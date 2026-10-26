@@ -83,3 +83,37 @@ Next: visual comparison on real images decides the app's PERCEPTUAL profile
 - `traiNNer/losses/topiq_nr_loss.py` (new): frozen CFANet-NR (KonIQ),
   maximizes the MOS; unit-tested for gradient flow.
 - `r3gan_disc_arch.py` docstring corrected: **R1 is not wired**; SN only.
+
+## Round 3 — R1 wired; first result: D-collapse at default gamma
+
+New capability (commit `ab73ea84`): StyleGAN2-style lazy R1
+(`net_d_reg_every`/`net_d_reg_weight`; penalty fp32; `r1_penalty` fixed for
+channels-last grads). Two latent upstream bugs found on the way:
+`r1_penalty.view()` crashes on channels-last grads (never wired before), and
+**dunet can't do R1 at all** (DySample → `grid_sample` has no double
+derivative) — R1 only works with the R3GAN D.
+
+| Metric (↑/↓) | S6 R3D+ConvNeXt+R1 (γ=1) | S7 = S6 from S4b |
+|---|---|---|
+| PSNR ↑ @10k | 25.17 | — |
+| TOPIQ ↑ @10k | 0.708 | — |
+| LPIPS ↓ @10k | 0.142 | — |
+| PSNR ↑ @30k | 26.09 | 26.09 |
+| TOPIQ ↑ @30k | **0.622** | 0.622 |
+| LPIPS ↓ @30k | 0.263 | 0.262 |
+| DISTS ↓ @30k | 0.174 | 0.174 |
+
+**Diagnosis (from the logs, not speculation):** at 10k S6 was on-track
+(TOPIQ 0.708 / LPIPS 0.142 — the best GAN trajectory yet). Between 10k and
+20k the D collapsed: `out_d_real` and `out_d_fake` converge to ±0.002
+(S2's D holds ±0.04 separation) — the adversarial signal disappeared and the
+G drifted to the pure-fidelity solution (PSNR up 0.9, perceptual collapse).
+S7 (S4b warm-start) collapsed identically — the curriculum did not prevent it.
+
+**Cause:** effective R1 strength. gamma=1 × lazy-scaling = 8.0 per reg step on
+a 0.31M-param D at batch 4 — far stronger regularization than this tiny D can
+carry (StyleGAN2 uses gamma≈1 with a 20M+ D at batch 32).
+
+**Next (round 4):** gamma sweep — S6 with `net_d_reg_weight: 0.1`, plus a
+`net_d_reg_every: 0` control (SN-only R3D + ConvNeXt). Success bar unchanged:
+beat S0's TOPIQ 0.719 / LPIPS 0.137.
