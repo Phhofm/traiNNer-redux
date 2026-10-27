@@ -135,3 +135,26 @@ the paper-recipe run (S10: no SN + R1) is round 5.
 `4x_paired_gan_r3gan_true.yml`: R3D without SN (`use_spectral_norm: false`,
 default now), R1 γ=1.0 every 16. Smoke-tested (R1 fires, D trains).
 Success bar: beat S0's TOPIQ 0.719 / LPIPS 0.137.
+
+## Round 5 — the CORRECT R3GAN recipe (reference-verified, running now)
+
+Reference source: `/home/phips/Documents/R3GAN/R3GAN-main` (brownvc/r3gan).
+Reading the reference exposed that rounds 3/4 tested the wrong recipe twice over:
+our adversarial objective was **hinge** (R3GAN uses **relativistic softplus**
+`softplus(-(real-fake))`), **R2 (fake-side gradient penalty) was missing**
+entirely, and our **gamma was 20× too large** (reference FFHQ-64: 0.05
+scheduled down to 0.005 — we used 1.0/0.1). Also: no spectral norm anywhere in
+the reference D (weight-scaled init instead), and no lazy regularization —
+R1+R2 every step. That combination of errors, not "R3GAN doesn't work",
+caused the round-3/4 D-collapses.
+
+Implemented (commit `594d7c61`):
+- `gan_loss.py`: new `relativistic` gan_type (softplus on the logits
+  difference; math unit-verified), `r2_penalty()` helper
+- `sr_model.py`: relativistic G/D steps + R1+R2 lazy block, gamma default
+  0.05
+- config: `4x_paired_gan_r3gan_correct.yml` (R3D no-SN + ConvNeXt +
+  relativistic + R1/R2 γ=0.05)
+- smoke: R1+R2 fire (34.6/32.0 — large but finite; watch for collapse at 10k)
+
+*(results to be filled in)*
