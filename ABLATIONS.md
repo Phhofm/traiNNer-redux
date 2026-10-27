@@ -114,6 +114,24 @@ S7 (S4b warm-start) collapsed identically — the curriculum did not prevent it.
 a 0.31M-param D at batch 4 — far stronger regularization than this tiny D can
 carry (StyleGAN2 uses gamma≈1 with a 20M+ D at batch 32).
 
-**Next (round 4):** gamma sweep — S6 with `net_d_reg_weight: 0.1`, plus a
-`net_d_reg_every: 0` control (SN-only R3D + ConvNeXt). Success bar unchanged:
-beat S0's TOPIQ 0.719 / LPIPS 0.137.
+Round 4 (γ sweep + control):
+
+| | S8 R1 γ=0.1 | S9 SN-only control |
+|---|---|---|
+| TOPIQ ↑ | 0.622 | **0.704** |
+| LPIPS ↓ | 0.263 | **0.147** |
+| D health @30k | dead (±0.0001, penalty 2.4→1e-6) | healthy (±0.04) |
+
+**S8 collapsed identically** — even γ=0.1 kills this D. **S9 is healthy and
+strong** (≈S1's perceptual scores).
+
+**The real cause:** R3GAN never uses spectral norm — its recipe is
+norm-free convs + R1 *only*. Our D had SN left in, so SN + R1
+double-regularized and collapsed the D at any gamma. S9 (SN, no R1) works;
+the paper-recipe run (S10: no SN + R1) is round 5.
+
+## Round 5 — S10, the actual R3GAN recipe
+
+`4x_paired_gan_r3gan_true.yml`: R3D without SN (`use_spectral_norm: false`,
+default now), R1 γ=1.0 every 16. Smoke-tested (R1 fires, D trains).
+Success bar: beat S0's TOPIQ 0.719 / LPIPS 0.137.
