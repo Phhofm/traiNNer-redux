@@ -35,7 +35,7 @@ class GANLoss(nn.Module):
         self.real_label_val = real_label_val
         self.fake_label_val = fake_label_val
 
-        self.relativistic = getattr(self, "relativistic", False)
+        self.relativistic = False
 
         if self.gan_type == "vanilla":
             self.loss = nn.BCEWithLogitsLoss()

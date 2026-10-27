@@ -614,9 +614,7 @@ class SRModel(BaseModel):
                     if label == "l_g_gan":
                         assert self.net_d is not None
                         fake_g_pred = self.net_d(self.output)
-                        if isinstance(loss.loss_weight, dict):  # noqa: F841  # placeholder guard
-                            pass
-                        if hasattr(loss, "relativistic") and loss.relativistic:
+                        if loss.relativistic:
                             # relativistic GAN (R3GAN): needs the other side's logits
                             with torch.inference_mode():
                                 real_g_pred = self.net_d(
@@ -754,7 +752,7 @@ class SRModel(BaseModel):
                 real_d_pred = self.net_d(
                     self._real_hr if self._real_hr is not None else self.gt
                 )
-                relativistic = getattr(cri_gan, "relativistic", False)
+                relativistic = cri_gan.relativistic
                 fake_d_pred = self.net_d(self.output.detach())
                 if relativistic:
                     # R3GAN: D loss on the logits DIFFERENCE (real vs fake)
@@ -818,10 +816,6 @@ class SRModel(BaseModel):
                 scale_before = self.scaler_d.get_scale()
                 self.scaler_d.step(self.optimizer_d)
                 self.scaler_d.update()
-                scale_after = self.scaler_d.get_scale()
-                loss_dict["scale_d"] = scale_after
-                self.optimizers_skipped[-1] = scale_after < scale_before
-                self.optimizer_d.zero_grad()
 
         for key, value in loss_dict.items():
             val = (

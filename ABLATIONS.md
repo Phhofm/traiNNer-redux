@@ -157,4 +157,41 @@ Implemented (commit `594d7c61`):
   relativistic + R1/R2 γ=0.05)
 - smoke: R1+R2 fire (34.6/32.0 — large but finite; watch for collapse at 10k)
 
-*(results to be filled in)*
+### Result: correct recipe, still collapses — and why
+
+Val metrics (Lucid val, 10k/20k): PSNR 26.09, TOPIQ 0.62, LPIPS 0.263 — the
+same degenerate numbers as rounds 3/4. D separation `out_d_real - out_d_fake`
+was 0.0000 from ~3k iters.
+
+Isolation experiments (this session):
+
+| Test | Result |
+|---|---|
+| Relativistic loss math (unit) | **correct** — D 0.3133 vs expected 0.3133, G 1.3133 vs 1.3133 |
+| R3GANDisc + relativistic, random inputs, 300 steps | **separates** (sep 0.014 → 54) |
+| In-loop, R1/R2 **off** | no separation (sep oscillates ±0.04, drifts to 0) |
+| In-loop, R1/R2 **on** (γ=0.05) | no separation; logits flatten to ±0.0002 |
+
+**Root cause (measured):** `|real - fake|` at the D input is only **0.02–0.04**
+(warm-started G output ≈ GT). Even cold-start G converges to GT within ~20
+iters (input diff 0.17 → 0.05). The relativistic objective's signal scales with
+that difference; a 0.31M D at lr 1e-4 cannot latch onto it and drifts to a
+near-constant function. R1/R2 then flatten it completely. With the D dead, the
+G has no adversarial pressure and stays on the fidelity solution — hence the
+identical metrics across all non-hinge attempts.
+
+**Methodological caveat for the whole table:** the hinge runs also showed a
+weak D (logits ±0.04), so the GAN differences in rounds 1–2 were driven mostly
+by the *perceptual loss* (VGG19 vs ConvNeXt vs DISTS), not by adversarial
+pressure.
+
+**Verdict:** relativistic R3GAN is a poor fit for warm-started SR finetuning at
+this scale. Keep **hinge + R3D (SN) + ConvNeXt** as the GAN option (S9:
+TOPIQ 0.704 / LPIPS 0.147) and **S4b (no GAN)** as the default candidate. If we
+ever want true R3GAN behavior, it needs a from-scratch G (reference trains from
+noise) — a different, longer experiment.
+
+**Code cleanups in this round:** removed the dead `relativistic_gan_loss.py`
+stub, placeholder lines, and the redundant `getattr`; `relativistic` defaults
+to False explicitly. The S10b run is abandoned (its 20k checkpoint is
+collapsed).
