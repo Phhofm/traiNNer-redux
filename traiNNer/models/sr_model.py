@@ -23,7 +23,7 @@ from traiNNer.archs.arch_info import ARCHS_WITHOUT_FP16
 from traiNNer.data.base_dataset import BaseDataset
 from traiNNer.data.degradations import resize_pt
 from traiNNer.losses import build_loss
-from traiNNer.losses.gan_loss import r1_penalty
+from traiNNer.losses.gan_loss import r1_penalty, r2_penalty
 from traiNNer.metrics import calculate_metric
 from traiNNer.models.base_model import BaseModel
 from traiNNer.utils import get_root_logger, imwrite, tensor2img
@@ -614,7 +614,24 @@ class SRModel(BaseModel):
                     if label == "l_g_gan":
                         assert self.net_d is not None
                         fake_g_pred = self.net_d(self.output)
-                        l_g_loss = loss(fake_g_pred, True, is_disc=False)
+                        if isinstance(loss.loss_weight, dict):  # noqa: F841  # placeholder guard
+                            pass
+                        if hasattr(loss, "relativistic") and loss.relativistic:
+                            # relativistic GAN (R3GAN): needs the other side's logits
+                            with torch.inference_mode():
+                                real_g_pred = self.net_d(
+                                    self._real_hr
+                                    if self._real_hr is not None
+                                    else self.gt
+                                )
+                            l_g_loss = loss(
+                                fake_g_pred,
+                                True,
+                                is_disc=False,
+                                other_logit=real_g_pred,
+                            )
+                        else:
+                            l_g_loss = loss(fake_g_pred, True, is_disc=False)
 
                         if self.adaptive_d:
                             l_g_gan_ema = (
@@ -737,41 +754,48 @@ class SRModel(BaseModel):
                 real_d_pred = self.net_d(
                     self._real_hr if self._real_hr is not None else self.gt
                 )
-                l_d_real = cri_gan(real_d_pred, True, is_disc=True)
+                relativistic = getattr(cri_gan, "relativistic", False)
+                fake_d_pred = self.net_d(self.output.detach())
+                if relativistic:
+                    # R3GAN: D loss on the logits DIFFERENCE (real vs fake)
+                    l_d_real = cri_gan(
+                        real_d_pred, True, is_disc=True, other_logit=fake_d_pred
+                    )
+                    l_d_fake = torch.zeros_like(l_d_real)
+                else:
+                    l_d_real = cri_gan(real_d_pred, True, is_disc=True)
+                    l_d_fake = cri_gan(fake_d_pred, False, is_disc=True)
                 loss_dict["l_d_real"] = l_d_real
                 loss_dict["out_d_real"] = torch.mean(real_d_pred.detach())
-                # fake
-                fake_d_pred = self.net_d(self.output.detach())
-                l_d_fake = cri_gan(fake_d_pred, False, is_disc=True)
                 loss_dict["l_d_fake"] = l_d_fake
                 loss_dict["out_d_fake"] = torch.mean(fake_d_pred.detach())
 
             l_d_step = (l_d_real + l_d_fake) / self.accum_iters
 
-            # R1 regularization (StyleGAN2 lazy regularization): every
-            # net_d_reg_every iters, penalize the D gradient norm on real data.
-            # Scaled by reg_every so total regularization matches per-step R1.
+            # R1/R2 regularization (R3GAN: zero-centered gradient penalties on
+            # real AND fake samples). StyleGAN2 lazy regularization: applied
+            # every net_d_reg_every iters, scaled to keep the total equivalent
+            # to per-step application. Requires a double-backprop-able D
+            # (r3gandisc: yes; dunet/DySample: impossible).
             reg_every = self.net_d_reg_every
             reg_weight = self.net_d_reg_weight
             if reg_every > 0 and reg_weight > 0 and current_iter % reg_every == 0:
                 real_img = (self._real_hr if self._real_hr is not None else self.gt)
                 real_img = real_img.detach().requires_grad_(True)
+                fake_img = self.output.detach().requires_grad_(True)
                 with torch.autocast(
                     device_type=self.device.type,
                     dtype=self.amp_dtype,
-                    enabled=False,  # penalty is a grad-norm: force fp32
+                    enabled=False,  # penalties are grad-norms: force fp32
                 ):
                     real_pred = self.net_d(real_img)
-                    l_d_r1 = (
-                        r1_penalty(real_pred, real_img)
-                        * 0.5
-                        * reg_weight
-                        * reg_every
-                        / self.accum_iters
-                    )
-                loss_dict["l_d_r1"] = l_d_r1.detach()
-                self.scaler_d.scale(l_d_r1).backward()
-                l_d_step = l_d_step + l_d_r1.detach()
+                    r1 = r1_penalty(real_pred, real_img)
+                    r2 = r2_penalty(self.net_d(fake_img), fake_img)
+                    l_d_reg = (r1 + r2) * 0.5 * reg_weight * reg_every / self.accum_iters
+                loss_dict["l_d_r1"] = r1.detach()
+                loss_dict["l_d_r2"] = r2.detach()
+                self.scaler_d.scale(l_d_reg).backward()
+                l_d_step = l_d_step + l_d_reg.detach()
 
             self.scaler_d.scale(l_d_step).backward()
 

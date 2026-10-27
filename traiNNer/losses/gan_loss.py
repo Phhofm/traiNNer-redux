@@ -35,6 +35,8 @@ class GANLoss(nn.Module):
         self.real_label_val = real_label_val
         self.fake_label_val = fake_label_val
 
+        self.relativistic = getattr(self, "relativistic", False)
+
         if self.gan_type == "vanilla":
             self.loss = nn.BCEWithLogitsLoss()
         elif self.gan_type == "lsgan":
@@ -45,6 +47,11 @@ class GANLoss(nn.Module):
             self.loss = self._wgan_softplus_loss
         elif self.gan_type == "hinge":
             self.loss = nn.ReLU()
+        elif self.gan_type == "relativistic":
+            # R3GAN objective: relativistic softplus. Needs the other side's
+            # logits — sr_model passes other_logit (see l_g_gan wiring).
+            self.relativistic = True
+            self.loss = nn.Softplus()
         else:
             raise NotImplementedError(f"GAN type {self.gan_type} is not implemented.")
 
@@ -97,7 +104,11 @@ class GANLoss(nn.Module):
         return input.new_ones(input.size()) * target_val
 
     def forward(
-        self, input: Tensor, target_is_real: bool, is_disc: bool = False
+        self,
+        input: Tensor,
+        target_is_real: bool,
+        is_disc: bool = False,
+        other_logit: Tensor | None = None,
     ) -> Tensor:
         """
         Args:
@@ -110,7 +121,17 @@ class GANLoss(nn.Module):
         Returns:
             Tensor: GAN loss value.
         """
-        if self.gan_type == "hinge":
+        if self.relativistic:
+            # R3GAN objective: relativistic softplus on the logits DIFFERENCE.
+            # D step: softplus(-(real - fake)); G step: softplus(-(fake - real)).
+            assert other_logit is not None, "relativistic loss needs other_logit"
+            if is_disc:
+                diff = input - other_logit if target_is_real else other_logit - input
+                loss = self.loss(-diff if target_is_real else diff).mean()
+            else:
+                diff = input - other_logit
+                loss = self.loss(-diff).mean()
+        elif self.gan_type == "hinge":
             if is_disc:  # for discriminators in hinge-gan
                 input = -input if target_is_real else input
                 assert isinstance(self.loss, nn.ReLU)
@@ -178,6 +199,16 @@ def r1_penalty(real_pred: Tensor, real_img: Tensor) -> Tensor:
         outputs=real_pred.sum(), inputs=real_img, create_graph=True
     )[0]
     grad_penalty = grad_real.pow(2).reshape(grad_real.shape[0], -1).sum(1).mean()
+    return grad_penalty
+
+
+def r2_penalty(fake_pred: Tensor, fake_img: Tensor) -> Tensor:
+    """Zero-centered gradient penalty on fake samples (R3GAN applies R1 + R2
+    symmetrically). Same shape contract as r1_penalty."""
+    grad_fake = torch.autograd.grad(
+        outputs=fake_pred.sum(), inputs=fake_img, create_graph=True
+    )[0]
+    grad_penalty = grad_fake.pow(2).reshape(grad_fake.shape[0], -1).sum(1).mean()
     return grad_penalty
 
 
